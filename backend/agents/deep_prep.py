@@ -144,7 +144,8 @@ def clean_and_structure(
     raw_data: list,
     user_query: str,
     kpis: list,
-    num_dashboards: int = 4
+    num_dashboards: int = 4,
+    preferred_chart_types: list = None,
 ) -> dict:
     """
     DeepPrep agent — implements arXiv 2602.07371.
@@ -167,6 +168,13 @@ def clean_and_structure(
     roles = detect_column_roles(raw_data)
     best = pick_best_columns(roles, kpis)
     kpi_text = ", ".join(kpis)
+    allowed_ct = {"bar", "line", "pie", "area"}
+    prefs = [c.lower().strip() for c in (preferred_chart_types or []) if c and c.lower().strip() in allowed_ct]
+    pref_line = (
+        f"USER PREFERRED CHART TYPES (use these types across panels in order, cycling when needed; still obey column semantics): {json.dumps(prefs)}"
+        if prefs
+        else "USER CHART PREFERENCE: none — choose the best mix of bar, line, pie, and area for the data."
+    )
 
     # Clamp num_dashboards
     num_dashboards = max(2, min(4, num_dashboards))
@@ -210,6 +218,7 @@ You received actual SQL query results and must plan {num_dashboards} dashboard p
 
 USER REQUEST: "{user_query}"
 KPIs REQUESTED: {kpi_text}
+{pref_line}
 TOTAL ROWS RETURNED: {len(raw_data)}
 
 ACTUAL COLUMNS IN THE DATA:

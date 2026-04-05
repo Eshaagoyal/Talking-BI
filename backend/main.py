@@ -32,6 +32,7 @@ class DashboardRequest(BaseModel):
     kpis: List[str] = []
     num_visualizations: Optional[int] = 4
     color_schema: Optional[str] = "blue"
+    preferred_chart_types: List[str] = []
 
 
 class KPIRequest(BaseModel):
@@ -41,6 +42,7 @@ class KPIRequest(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     dashboard_context: dict = {}
+    answer_style: Optional[str] = "balanced"  # concise | balanced | detailed
 
 
 @app.get("/")
@@ -98,7 +100,8 @@ def generate_dashboards(req: DashboardRequest):
             sql_result["data"],
             req.query,
             kpis,
-            num_dashboards=num_viz
+            num_dashboards=num_viz,
+            preferred_chart_types=req.preferred_chart_types or None,
         )
         dashboard_plan = prep_result.get("dashboard_plan", {})
 
@@ -138,6 +141,14 @@ def chat_endpoint(req: ChatRequest):
         chat_model = genai.GenerativeModel("gemini-2.5-flash")
 
         context = req.dashboard_context
+        style = (req.answer_style or "balanced").lower().strip()
+        guides = {
+            "concise": "Answer in 1-2 short sentences. Lead with the key number or conclusion.",
+            "balanced": "Answer in 2-4 sentences. Reference specific numbers from the data.",
+            "detailed": "Answer in one focused paragraph (about 4-7 sentences). Include brief context, numbers, and one practical implication or follow-up.",
+        }
+        length_guide = guides.get(style, guides["balanced"])
+
         prompt = f"""You are a helpful BI analyst chatbot. A user is looking at a dashboard and has a question.
 
 Dashboard context:
@@ -148,7 +159,8 @@ Dashboard context:
 
 User question: "{req.message}"
 
-Answer concisely in 2-4 sentences. Reference specific numbers from the data. Plain text only. No markdown."""
+Instructions: {length_guide}
+Plain text only. No markdown."""
 
         response = chat_model.generate_content(prompt)
         return {"response": response.text.strip()}
