@@ -1,6 +1,14 @@
-import { useState, useRef, useEffect } from "react"
+import { useState, useRef, useEffect, useCallback } from "react"
 import { THEME_OPTIONS, themeAccent } from "../themeOptions"
 import VoiceMicButton from "./VoiceMicButton"
+import { apiUrl } from "../api"
+
+function sanitizeTableName(filename) {
+  const stem = (filename || "dataset").replace(/\.[^.]+$/i, "")
+  let s = stem.replace(/[^a-zA-Z0-9_]+/g, "_").replace(/^_+|_+$/g, "") || "uploaded_dataset"
+  if (!/^[a-zA-Z_]/.test(s)) s = `ds_${s}`
+  return s.slice(0, 63)
+}
 
 const CHART_PRESET_GROUPS = ["Recommended", "Single chart", "Combinations"]
 
@@ -27,7 +35,7 @@ function typesForPreset(value) {
 
 const selectStyle = {
   width: "100%",
-  background: "#fff",
+  background: "var(--surface2)",
   border: "1px solid var(--border)",
   borderRadius: 12,
   padding: "12px 16px",
@@ -53,20 +61,61 @@ export default function NewDashboardForm({
   initialNumViz = 4,
   initialKpis,
   initialChartTypes,
+  initialDatasetKey,
 }) {
   const [query, setQuery] = useState(initialQuery)
   const [kpis, setKpis] = useState(() => (Array.isArray(initialKpis) ? initialKpis : []))
   const [kpiInput, setKpiInput] = useState("")
-  const [numViz, setNumViz] = useState(() => Math.min(8, Math.max(2, initialNumViz ?? 4)))
+  const [numViz, setNumViz] = useState(() => Math.min(4, Math.max(2, initialNumViz ?? 4)))
   const [theme, setTheme] = useState(() =>
     THEME_OPTIONS.some((t) => t.key === initialTheme) ? initialTheme : "cyan"
   )
-  const [datasetKey, setDatasetKey] = useState("primary")
+  const [datasets, setDatasets] = useState([])
+  const [datasetsLoading, setDatasetsLoading] = useState(true)
+  const [datasetsErr, setDatasetsErr] = useState(null)
+  const [datasetKey, setDatasetKey] = useState(() => initialDatasetKey || "primary")
+  const [pendingFile, setPendingFile] = useState(null)
   const [uploadName, setUploadName] = useState(null)
+  const [uploadTableName, setUploadTableName] = useState("")
+  const [uploadErr, setUploadErr] = useState(null)
   const [chartPreset, setChartPreset] = useState(() => presetFromTypes(initialChartTypes))
-  const [detecting, setDetecting] = useState(false)
   const fileRef = useRef(null)
   const kpiRef = useRef(null)
+
+  const loadDatasets = useCallback(async () => {
+    setDatasetsLoading(true)
+    setDatasetsErr(null)
+    try {
+      const res = await fetch(apiUrl("/datasets"))
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body.detail || `HTTP ${res.status}`)
+      }
+      const data = await res.json()
+      setDatasets(Array.isArray(data.datasets) ? data.datasets : [])
+    } catch (e) {
+      setDatasetsErr(e.message || "Could not load tables from the database.")
+      setDatasets([])
+    } finally {
+      setDatasetsLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    loadDatasets()
+  }, [loadDatasets])
+
+  useEffect(() => {
+    if (!datasets.length) return
+    setDatasetKey((prev) => {
+      if (prev === "primary") return "primary"
+      if (datasets.some((d) => d.name === prev)) return prev
+      const init = initialDatasetKey
+      if (init === "primary") return "primary"
+      if (init && datasets.some((d) => d.name === init)) return init
+      return datasets[0].name
+    })
+  }, [datasets, initialDatasetKey])
 
   useEffect(() => {
     setQuery(initialQuery)
@@ -74,7 +123,8 @@ export default function NewDashboardForm({
     setNumViz(Math.min(8, Math.max(2, initialNumViz ?? 4)))
     setKpis(Array.isArray(initialKpis) ? initialKpis : [])
     setChartPreset(presetFromTypes(initialChartTypes))
-  }, [initialQuery, initialTheme, initialNumViz, initialKpis, initialChartTypes])
+    if (initialDatasetKey) setDatasetKey(initialDatasetKey)
+  }, [initialQuery, initialTheme, initialNumViz, initialKpis, initialChartTypes, initialDatasetKey])
 
   const accent = themeAccent(theme)
 
@@ -93,45 +143,74 @@ export default function NewDashboardForm({
     }
   }
 
-  const autoDetect = async () => {
-    if (!query.trim()) return
-    setDetecting(true)
-    try {
-      const res = await fetch("http://127.0.0.1:8000/extract-kpis", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query }),
-      })
-      const data = await res.json()
-      if (data.kpis?.length) setKpis(data.kpis)
-    } catch {
-      /* ignore */
-    } finally {
-      setDetecting(false)
-    }
-  }
-
   const onFile = (e) => {
     const f = e.target.files?.[0]
-    setUploadName(f ? f.name : null)
-    if (f) setDatasetKey("uploaded_sales_data")
     e.target.value = ""
+    if (!f) return
+    setPendingFile(f)
+    setUploadName(f.name)
+    setUploadTableName((prev) => (prev.trim() ? prev : sanitizeTableName(f.name)))
   }
 
-  const handleSubmit = () => {
+  const clearPendingUpload = () => {
+    setPendingFile(null)
+    setUploadName(null)
+  }
+
+  const handleSubmit = async () => {
     if (!query.trim()) return
+    setUploadErr(null)
+    if (!kpis.length) {
+      setUploadErr("Add at least one key metric (e.g. revenue, units sold).")
+      return
+    }
     const sent = Math.min(4, Math.max(2, numViz))
+    let targetDataset = datasetKey
+
+    if (pendingFile) {
+      const tn = uploadTableName.trim()
+      if (!tn || !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(tn)) {
+        setUploadErr("Enter a valid table name: start with a letter or underscore; use only letters, numbers, and underscores.")
+        return
+      }
+      try {
+        const fd = new FormData()
+        fd.append("file", pendingFile)
+        const up = await fetch(apiUrl(`/upload-csv?table_name=${encodeURIComponent(tn)}`), {
+          method: "POST",
+          body: fd,
+        })
+        if (!up.ok) {
+          const err = await up.json().catch(() => ({}))
+          const d = err.detail
+          setUploadErr(typeof d === "string" ? d : "Upload failed")
+          return
+        }
+        targetDataset = tn
+        clearPendingUpload()
+        await loadDatasets()
+        setDatasetKey(tn)
+      } catch {
+        setUploadErr("Could not reach the backend for upload.")
+        return
+      }
+    } else if (!datasetKey) {
+      setUploadErr("Choose a table from the list, or import a file with a table name.")
+      return
+    }
+
     onGenerate({
       query: query.trim(),
       kpis,
       num_visualizations: sent,
       color_schema: theme,
       preferred_chart_types: typesForPreset(chartPreset),
+      dataset_key: targetDataset,
     })
   }
 
   const bumpViz = (delta) => {
-    setNumViz((n) => Math.min(8, Math.max(2, n + delta)))
+    setNumViz((n) => Math.min(4, Math.max(2, n + delta)))
   }
 
   const appendVoice = (text) => {
@@ -175,7 +254,7 @@ export default function NewDashboardForm({
             border: `1px solid ${accent}22`,
           }}
         >
-          Query-driven layouts
+          Dashboard builder
         </div>
         <h1
           style={{
@@ -189,66 +268,200 @@ export default function NewDashboardForm({
         >
           New dashboard
         </h1>
-        <p style={{ margin: "12px 0 0", fontSize: 14, color: "var(--text-2)", lineHeight: 1.55, maxWidth: 520 }}>
-          Describe what you want to see. We’ll plan SQL, charts, and KPIs—then you can refine or ask the AI.
+        <p style={{ margin: "12px 0 0", fontSize: 14, color: "var(--text-2)", lineHeight: 1.55, maxWidth: 560 }}>
+          Describe the analysis you need. We generate the query, visuals, and metric coverage—you can refine the result or ask the assistant.
         </p>
       </header>
 
       <div
         style={{
-          background: "linear-gradient(180deg, #ffffff 0%, #fafbfc 100%)",
+          background: "linear-gradient(180deg, #ffffff 0%, #f8fbfd 100%)",
           borderRadius: 18,
-          border: "1px solid rgba(15, 23, 42, 0.07)",
-          boxShadow: "var(--shadow-card), 0 32px 64px -28px rgba(15, 23, 42, 0.14)",
+          border: `1px solid ${accent}1f`,
+          boxShadow: `0 16px 42px -24px ${accent}52, var(--shadow-card)`,
           padding: "36px 40px",
         }}
       >
-        <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-          <section>
-            <label style={labelStyle}>Dataset</label>
-            <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
+          <section
+            style={{
+              background: `linear-gradient(180deg, ${accent}0d 0%, #ffffff 100%)`,
+              border: `1px solid ${accent}2b`,
+              borderRadius: 16,
+              padding: "22px 24px",
+              boxShadow: `0 0 0 1px ${accent}0f`,
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, flexWrap: "wrap", marginBottom: 18 }}>
+              <div>
+                <h2 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: accent, letterSpacing: "-0.02em" }}>
+                  Data source
+                </h2>
+                <p style={{ margin: "6px 0 0", fontSize: 13, color: "var(--text-3)", lineHeight: 1.5, maxWidth: 520 }}>
+                  Select a table already in your warehouse, or import a file. Imports are written to the same database connection as your app.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => loadDatasets()}
+                disabled={datasetsLoading}
+                style={{
+                  background: "#ffffff",
+                  border: `1px solid ${accent}35`,
+                  borderRadius: 10,
+                  padding: "8px 14px",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: accent,
+                  cursor: datasetsLoading ? "not-allowed" : "pointer",
+                  boxShadow: `0 2px 10px ${accent}22`,
+                  flexShrink: 0,
+                }}
+              >
+                {datasetsLoading ? "Syncing…" : "Sync tables"}
+              </button>
+            </div>
+            {datasetsErr && (
+              <div
+                style={{
+                  fontSize: 13,
+                  color: "#b91c1c",
+                  marginBottom: 14,
+                  padding: "10px 12px",
+                  background: "#fef2f2",
+                  borderRadius: 10,
+                  border: "1px solid #fecaca",
+                }}
+              >
+                {datasetsErr}
+              </div>
+            )}
+            <p style={{ ...labelStyle, marginBottom: 8 }}>Existing table</p>
+            <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "stretch" }}>
               <select
                 value={datasetKey}
-                onChange={(e) => {
-                  const v = e.target.value
-                  setDatasetKey(v)
-                  if (v === "primary") setUploadName(null)
-                }}
-                style={{ ...selectStyle, flex: "1 1 220px" }}
+                onChange={(e) => setDatasetKey(e.target.value)}
+                disabled={!!pendingFile}
+                style={{ ...selectStyle, flex: "1 1 260px", minHeight: 46, opacity: pendingFile ? 0.55 : 1 }}
               >
-                <option value="primary">global_superstore</option>
-                <option value="uploaded_sales_data">
-                  {uploadName ? `uploaded_sales_data · ${uploadName}` : "uploaded_sales_data"}
-                </option>
+                <option value="primary">Auto-select (recommended)</option>
+                {datasets.map((d) => {
+                  const n = typeof d.row_count === "number" ? d.row_count.toLocaleString() : d.row_count
+                  return (
+                    <option key={d.name} value={d.name}>
+                      {d.name} · {n} rows
+                    </option>
+                  )
+                })}
               </select>
-              <input ref={fileRef} type="file" accept=".csv,.json,.xlsx,.xls" hidden onChange={onFile} />
+              <input ref={fileRef} type="file" accept=".csv,.xlsx,.xlsm" hidden onChange={onFile} />
               <button
                 type="button"
                 onClick={() => fileRef.current?.click()}
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
+                  justifyContent: "center",
                   gap: 8,
-                  background: "#fff",
-                  border: "1px solid var(--border)",
+                  background: `linear-gradient(180deg, ${accent}18, ${accent}0f)`,
+                  border: `1px solid ${accent}55`,
                   borderRadius: 12,
-                  padding: "0 20px",
+                  padding: "0 22px",
+                  minHeight: 46,
                   fontSize: 14,
                   fontWeight: 600,
-                  color: "var(--text-1)",
+                  color: accent,
                   cursor: "pointer",
                   whiteSpace: "nowrap",
+                  boxShadow: `0 6px 18px -10px ${accent}80`,
                 }}
               >
-                <span style={{ fontSize: 16 }}>⬆</span>
-                Upload
+                Import CSV or Excel
               </button>
             </div>
+            <p style={{ margin: "10px 0 0", fontSize: 12, color: "var(--text-3)", lineHeight: 1.55 }}>
+              Auto-select chooses a primary fact table when available (e.g. global_superstore or sales), otherwise the largest suitable table.
+            </p>
+
+            {(uploadName || pendingFile) && (
+              <div
+                style={{
+                  marginTop: 20,
+                  padding: "16px 18px",
+                  background: "#ffffff",
+                  borderRadius: 12,
+                  border: `1px solid ${accent}30`,
+                  boxShadow: `0 10px 28px -22px ${accent}65`,
+                }}
+              >
+                <p style={{ ...labelStyle, marginBottom: 10 }}>Import details</p>
+                <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10, marginBottom: 12 }}>
+                  <span
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 8,
+                      padding: "6px 12px",
+                      borderRadius: 8,
+                      background: "var(--surface2)",
+                      border: "1px solid var(--border)",
+                      fontSize: 13,
+                      fontWeight: 500,
+                      color: "var(--text-1)",
+                      maxWidth: "100%",
+                    }}
+                  >
+                    <span style={{ color: "var(--text-3)", fontWeight: 600, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                      File
+                    </span>
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{uploadName}</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={clearPendingUpload}
+                    style={{
+                      background: "transparent",
+                      border: "none",
+                      padding: "6px 4px",
+                      fontSize: 13,
+                      fontWeight: 600,
+                      color: "var(--text-3)",
+                      cursor: "pointer",
+                      textDecoration: "underline",
+                      textUnderlineOffset: 3,
+                    }}
+                  >
+                    Remove
+                  </button>
+                </div>
+                <label style={{ ...labelStyle, marginBottom: 6 }}>Save as table</label>
+                <input
+                  value={uploadTableName}
+                  onChange={(e) => setUploadTableName(e.target.value)}
+                  placeholder="e.g. finance_q4_2024"
+                  style={{
+                    width: "100%",
+                    maxWidth: 360,
+                    boxSizing: "border-box",
+                    background: "#ffffff",
+                    border: "1px solid var(--border)",
+                    borderRadius: 10,
+                    padding: "11px 14px",
+                    fontSize: 14,
+                    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+                    color: "var(--text-1)",
+                  }}
+                />
+                <p style={{ margin: "8px 0 0", fontSize: 12, color: "var(--text-3)", lineHeight: 1.5 }}>
+                  Use letters, numbers, and underscores only; start with a letter or underscore. Re-importing replaces an existing table with the same name.
+                </p>
+              </div>
+            )}
           </section>
 
           <section>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 8 }}>
-              <label style={{ ...labelStyle, margin: 0 }}>Your analytics question (new KPI / focus)</label>
+              <label style={{ ...labelStyle, margin: 0 }}>Analysis question</label>
               <VoiceMicButton onTranscript={appendVoice} disabled={loading} accent={accent} />
             </div>
             <textarea
@@ -258,7 +471,7 @@ export default function NewDashboardForm({
               rows={4}
               style={{
                 width: "100%",
-                background: "#fff",
+                background: "#ffffff",
                 border: "1px solid var(--border)",
                 borderRadius: 12,
                 padding: "14px 16px",
@@ -283,31 +496,12 @@ export default function NewDashboardForm({
           </section>
 
           <section>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
-              <label style={{ ...labelStyle, margin: 0 }}>KPIs (optional)</label>
-              <button
-                type="button"
-                onClick={autoDetect}
-                disabled={detecting || !query.trim()}
-                style={{
-                  background: `${accent}12`,
-                  border: `1px solid ${accent}35`,
-                  borderRadius: 8,
-                  padding: "6px 12px",
-                  fontSize: 12,
-                  fontWeight: 600,
-                  color: accent,
-                  cursor: detecting || !query.trim() ? "not-allowed" : "pointer",
-                  opacity: !query.trim() ? 0.5 : 1,
-                }}
-              >
-                {detecting ? "Detecting…" : "✨ Auto-detect from query"}
-              </button>
-            </div>
+            <label style={{ ...labelStyle, marginBottom: 4 }}>Key metrics</label>
+            <p style={{ margin: "0 0 10px", fontSize: 12, color: "var(--text-3)" }}>Required — at least one metric the charts should reflect.</p>
             <div
               onClick={() => kpiRef.current?.focus()}
               style={{
-                background: "#fff",
+                background: "#ffffff",
                 border: "1px solid var(--border)",
                 borderRadius: 12,
                 padding: "8px 12px",
@@ -362,7 +556,7 @@ export default function NewDashboardForm({
                 onChange={(e) => setKpiInput(e.target.value)}
                 onKeyDown={handleKpiKeyDown}
                 onBlur={() => kpiInput && addKpi(kpiInput)}
-                placeholder={kpis.length === 0 ? "e.g. sales, profit — Enter to add" : ""}
+                placeholder={kpis.length === 0 ? "Add metrics (e.g. revenue, margin). Press Enter after each." : ""}
                 style={{
                   flex: 1,
                   minWidth: 140,
@@ -383,7 +577,7 @@ export default function NewDashboardForm({
                   display: "flex",
                   alignItems: "center",
                   gap: 4,
-                  background: "#fff",
+                  background: "#ffffff",
                   border: "1px solid var(--border)",
                   borderRadius: 12,
                   padding: 4,
@@ -396,11 +590,11 @@ export default function NewDashboardForm({
                 <input
                   type="number"
                   min={2}
-                  max={8}
+                  max={4}
                   value={numViz}
                   onChange={(e) => {
                     const n = parseInt(e.target.value, 10)
-                    if (!Number.isNaN(n)) setNumViz(Math.min(8, Math.max(2, n)))
+                    if (!Number.isNaN(n)) setNumViz(Math.min(4, Math.max(2, n)))
                   }}
                   style={{
                     flex: 1,
@@ -414,7 +608,7 @@ export default function NewDashboardForm({
                     outline: "none",
                   }}
                 />
-                <button type="button" onClick={() => bumpViz(1)} disabled={numViz >= 8} style={stepBtn(numViz >= 8)}>
+                <button type="button" onClick={() => bumpViz(1)} disabled={numViz >= 4} style={stepBtn(numViz >= 4)}>
                   +
                 </button>
               </div>
@@ -445,6 +639,21 @@ export default function NewDashboardForm({
             </section>
           </div>
 
+          {uploadErr && (
+            <div
+              style={{
+                background: "#fef2f2",
+                border: "1px solid #fecaca",
+                borderRadius: 12,
+                padding: "12px 16px",
+                fontSize: 14,
+                color: "#b91c1c",
+              }}
+            >
+              {uploadErr}
+            </div>
+          )}
+
           {error && (
             <div
               style={{
@@ -465,7 +674,7 @@ export default function NewDashboardForm({
               type="button"
               onClick={() => onCancel?.()}
               style={{
-                background: "#fff",
+                background: "#ffffff",
                 border: "1px solid var(--border)",
                 borderRadius: 12,
                 padding: "14px 26px",
@@ -480,25 +689,25 @@ export default function NewDashboardForm({
             <button
               type="button"
               onClick={handleSubmit}
-              disabled={loading || !query.trim()}
+              disabled={loading || !query.trim() || kpis.length === 0}
               style={{
                 flex: "1 1 220px",
-                background: loading || !query.trim() ? "var(--surface)" : `linear-gradient(180deg, ${accent}, ${accent}dd)`,
+                background: loading || !query.trim() || kpis.length === 0 ? "var(--surface)" : `linear-gradient(180deg, ${accent}, ${accent}dd)`,
                 border: "none",
                 borderRadius: 12,
                 padding: "14px 26px",
                 fontSize: 15,
                 fontWeight: 700,
-                color: loading || !query.trim() ? "var(--text-3)" : "#fff",
-                cursor: loading || !query.trim() ? "not-allowed" : "pointer",
+                color: loading || !query.trim() || kpis.length === 0 ? "var(--text-3)" : "#fff",
+                cursor: loading || !query.trim() || kpis.length === 0 ? "not-allowed" : "pointer",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
                 gap: 10,
-                boxShadow: loading || !query.trim() ? "none" : `0 10px 28px ${accent}45`,
+                boxShadow: loading || !query.trim() || kpis.length === 0 ? "none" : `0 10px 28px ${accent}45`,
               }}
             >
-              {loading ? "Generating…" : `+ Save & generate ${Math.min(4, numViz)} views`}
+              {loading ? "Generating…" : `Generate dashboard · ${Math.min(4, numViz)} views`}
             </button>
           </div>
 
@@ -511,8 +720,8 @@ export default function NewDashboardForm({
                 padding: "16px 18px",
               }}
             >
-              <div style={{ fontSize: 14, fontWeight: 700, color: accent, marginBottom: 10 }}>Generating previews…</div>
-              {["Analysis & cleaning", "Layout options (3–4)", "Charts & KPI coverage"].map((s, i) => (
+              <div style={{ fontSize: 14, fontWeight: 700, color: accent, marginBottom: 10 }}>Preparing your dashboard…</div>
+              {["Data preparation", "Layout & chart selection", "Metric coverage"].map((s, i) => (
                 <div key={s} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13, color: "var(--text-2)", marginBottom: 6 }}>
                   <span
                     style={{
@@ -551,11 +760,10 @@ function stepBtn(disabled) {
 }
 
 const labelStyle = {
-  fontSize: 11,
-  fontWeight: 700,
-  color: "var(--text-3)",
-  letterSpacing: "0.06em",
-  textTransform: "uppercase",
+  fontSize: 12,
+  fontWeight: 600,
+  color: "var(--text-2)",
+  letterSpacing: "0.01em",
   display: "block",
   marginBottom: 8,
 }

@@ -140,6 +140,164 @@ def pick_best_columns(roles: dict, kpis: list) -> dict:
     }
 
 
+def _looks_time_like(name: str) -> bool:
+    n = (name or "").lower()
+    return any(t in n for t in ("date", "month", "year", "period", "time", "week", "quarter"))
+
+
+def _finalize_dashboard_plan(
+    plan: dict,
+    prefs: list,
+    roles: dict,
+    actual_columns: list,
+    best: dict,
+) -> dict:
+    """
+    Deterministic post-processing:
+    - Enforce user chart preferences (hard, not just prompt hint)
+    - Keep axes valid against actual columns
+    - Use COUNT fallback when numeric measures are unavailable
+    """
+    dq = plan.setdefault("data_quality", {})
+    issues = dq.setdefault("issues_found", [])
+    dplan = plan.setdefault("dashboard_plan", {})
+    keys = sorted(
+        dplan.keys(),
+        key=lambda k: int(re.search(r"(\d+)$", k).group(1)) if re.search(r"(\d+)$", k) else 999,
+    )
+
+    preferred_applied = []
+    seen_signatures = set()
+    for idx, key in enumerate(keys):
+        dash = dplan.get(key, {})
+        x_axis = dash.get("x_axis")
+        y_axis = dash.get("y_axis")
+        aggregation = str(dash.get("aggregation", "SUM")).upper()
+
+        # Always keep valid axes
+        if x_axis not in actual_columns:
+            x_axis = best["cat_col"] or (roles["text"][0] if roles["text"] else actual_columns[0])
+            dash["x_axis"] = x_axis
+            issues.append(f"{key}: x_axis normalized to '{x_axis}'.")
+
+        if roles["numeric"]:
+            if y_axis not in roles["numeric"]:
+                y_axis = best["primary_metric"] or roles["numeric"][0]
+                dash["y_axis"] = y_axis
+                issues.append(f"{key}: y_axis normalized to numeric column '{y_axis}'.")
+            if aggregation not in {"SUM", "AVG", "COUNT"}:
+                dash["aggregation"] = "SUM"
+                issues.append(f"{key}: aggregation normalized to SUM.")
+        else:
+            # No numeric data: force robust categorical count charting
+            dash["y_axis"] = x_axis
+            dash["aggregation"] = "COUNT"
+            issues.append(f"{key}: no numeric columns found; using COUNT by '{x_axis}'.")
+
+        # Hard enforce chart preference if provided
+        if prefs:
+            desired = prefs[idx % len(prefs)]
+            dash["chart_type"] = desired
+            preferred_applied.append(desired)
+        else:
+            desired = str(dash.get("chart_type", "bar")).lower().strip() or "bar"
+            dash["chart_type"] = desired if desired in {"bar", "line", "pie", "area"} else "bar"
+
+        # Compatibility tuning
+        if dash["chart_type"] == "pie" and x_axis in roles["numeric"] and roles["text"]:
+            dash["x_axis"] = roles["text"][0]
+            issues.append(f"{key}: pie chart switched to text x_axis '{dash['x_axis']}' for category slices.")
+
+        if dash["chart_type"] in {"line", "area"} and not _looks_time_like(dash.get("x_axis", "")):
+            if roles["date"]:
+                dash["x_axis"] = roles["date"][0]
+                issues.append(f"{key}: {dash['chart_type']} chart x_axis shifted to date column '{dash['x_axis']}'.")
+
+        # Reduce duplicate panels: avoid same (type, x, y, aggregation) across dashboards.
+        sig = (
+            dash.get("chart_type"),
+            dash.get("x_axis"),
+            dash.get("y_axis"),
+            str(dash.get("aggregation", "SUM")).upper(),
+        )
+        if sig in seen_signatures:
+            candidate_x = [best.get("cat_col2"), best.get("time_col"), best.get("cat_col")]
+            candidate_y = [best.get("secondary_metric"), best.get("primary_metric")]
+            
+            if prefs:
+                candidate_chart = [dash["chart_type"]]
+            else:
+                candidate_chart = ["bar", "pie", "line", "area"]
+                
+            changed = False
+            for cy in candidate_y:
+                if roles["numeric"]:
+                    if not cy or cy not in roles["numeric"]:
+                        continue
+                
+                for cx in candidate_x:
+                    if not cx or cx not in actual_columns:
+                        continue
+                        
+                    if not roles["numeric"]:
+                        cy = cx
+                        
+                    for c_type in candidate_chart:
+                        new_sig = (c_type, cx, cy, "SUM")
+                        if new_sig in seen_signatures:
+                            continue
+                            
+                        # For line/area, prefer time-like x-axis when available
+                        if c_type in {"line", "area"} and roles["date"] and cx not in roles["date"]:
+                            continue
+                        
+                        old_y = dash.get("y_axis", "")
+                        old_x = dash.get("x_axis", "")
+                        
+                        dash["chart_type"] = c_type
+                        dash["x_axis"] = cx
+                        dash["y_axis"] = cy
+                        dash["aggregation"] = "SUM"
+                        
+                        # Update title dynamically to avoid misleading labels
+                        if cy != old_y or cx != old_x:
+                            title = dash.get("title", "")
+                            desc = dash.get("description", "")
+                            if old_y and old_y in title:
+                                title = title.replace(old_y, cy)
+                                desc = desc.replace(old_y, cy)
+                            if old_x and old_x in title:
+                                title = title.replace(old_x, cx)
+                            if cy and cy not in title:
+                                title = f"{cy} by {cx}"
+                            dash["title"] = title
+                            dash["description"] = desc
+                                
+                        seen_signatures.add(new_sig)
+                        issues.append(
+                            f"{key}: adjusted type/axes to avoid duplicate panel ({c_type} {cx}/{cy} SUM)."
+                        )
+                        changed = True
+                        break
+                    if changed:
+                        break
+                if changed:
+                    break
+                    
+            if not changed:
+                # Keep current if no better alternative found.
+                seen_signatures.add(sig)
+        else:
+            seen_signatures.add(sig)
+
+        dplan[key] = dash
+
+    if prefs:
+        dq["requested_chart_types"] = prefs
+        dq["applied_chart_types"] = preferred_applied
+    return plan
+
+
 def clean_and_structure(
     raw_data: list,
     user_query: str,
@@ -214,7 +372,8 @@ def clean_and_structure(
     }
 
     prompt = f"""You are DeepPrep — a BI dashboard planning agent (arXiv 2602.07371).
-You received actual SQL query results and must plan {num_dashboards} dashboard panels.
+You are execution-grounded: the SQL already ran; you only assign axes from columns that EXIST in the result rows.
+If a column is text but holds dates (see sample patterns), you may still use it on x_axis for line/bar (categories are date strings).
 
 USER REQUEST: "{user_query}"
 KPIs REQUESTED: {kpi_text}
@@ -282,13 +441,7 @@ Return ONLY valid JSON — no markdown, no backticks, no explanation:
 
     try:
         plan = json.loads(raw)
-        # Validate all column references exist in actual data
-        for key, dash in plan.get("dashboard_plan", {}).items():
-            if dash.get("x_axis") not in actual_columns:
-                dash["x_axis"] = best["cat_col"] or actual_columns[0]
-            if dash.get("y_axis") not in roles["numeric"]:
-                dash["y_axis"] = best["primary_metric"] or roles["numeric"][0] if roles["numeric"] else actual_columns[-1]
-        return plan
+        return _finalize_dashboard_plan(plan, prefs, roles, actual_columns, best)
 
     except (json.JSONDecodeError, Exception):
         # Smart fallback using detected columns
@@ -321,4 +474,4 @@ Return ONLY valid JSON — no markdown, no backticks, no explanation:
                 "aggregation": agg
             }
 
-        return fallback_plan
+        return _finalize_dashboard_plan(fallback_plan, prefs, roles, actual_columns, best)

@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import {
   BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
   AreaChart, Area, XAxis, YAxis, CartesianGrid,
@@ -159,11 +159,41 @@ function KpiCard({ kpi, dashboards, colors }) {
 // ── Main Dashboard View ──────────────────────────────────────────────────────
 export default function DashboardView({ result }) {
   const [activeTab, setActiveTab] = useState(0)
+  const [explanation, setExplanation] = useState("")
+  const [isExplaining, setIsExplaining] = useState(false)
+
   const { dashboards, insights, kpis, sql_used, color_schema, row_count } = result
   const dashList = Object.values(dashboards)
   const active = dashList[activeTab]
   const colors = COLOR_PALETTES[color_schema] || COLOR_PALETTES.indigo
   const primaryColor = colors[0]
+
+  useEffect(() => {
+    setExplanation("")
+  }, [activeTab])
+
+  const handleExplain = async (dash) => {
+    if (isExplaining) return
+    setIsExplaining(true)
+    setExplanation("")
+    try {
+      const res = await fetch("http://127.0.0.1:8000/explain-chart", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: dash.title,
+          description: dash.description,
+          data: dash.data
+        })
+      })
+      const respJson = await res.json()
+      if (respJson.explanation) setExplanation(respJson.explanation)
+    } catch (e) {
+      setExplanation("Error loading explanation.")
+    } finally {
+      setIsExplaining(false)
+    }
+  }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
@@ -272,9 +302,33 @@ export default function DashboardView({ result }) {
                   borderRadius: 20, padding: "3px 10px", fontSize: 11,
                   color: "var(--text-secondary)"
                 }}>{active.total_points} points</span>
+                <button 
+                  onClick={() => handleExplain(active)}
+                  disabled={isExplaining}
+                  style={{
+                    background: `linear-gradient(to right, ${primaryColor}15, ${primaryColor}25)`, 
+                    border: `1px solid ${primaryColor}40`,
+                    borderRadius: 20, padding: "3px 12px", fontSize: 11,
+                    color: primaryColor, fontWeight: 700, cursor: isExplaining ? "wait" : "pointer",
+                    display: "flex", alignItems: "center", gap: 4
+                  }}
+                >
+                  {isExplaining ? "Thinking..." : "✨ Explain"}
+                </button>
               </div>
             </div>
             <Chart dashboard={active} colors={colors} height={320} />
+            {explanation && (
+              <div style={{
+                marginTop: 16, padding: "16px 20px", background: `${primaryColor}08`,
+                border: `1px solid ${primaryColor}20`, borderRadius: 12,
+                fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.6,
+                borderLeft: `4px solid ${primaryColor}`
+              }}>
+                <strong style={{ color: primaryColor }}>✨ AI Chart Summary: </strong>
+                {explanation}
+              </div>
+            )}
           </div>
         )}
       </div>

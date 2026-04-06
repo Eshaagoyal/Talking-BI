@@ -39,7 +39,6 @@ export default function MainArea({
               savedDashboards={savedDashboards}
               activeSavedId={previewDashboard?.id ?? dashboard?.id}
               onSelectSaved={onSelectSaved}
-              onNew={onNew}
               accentKey={stripAccent}
             />
           </div>
@@ -63,6 +62,7 @@ export default function MainArea({
             initialNumViz={editingId ? dashboard?.num_dashboards : undefined}
             initialKpis={editingId ? dashboard?.kpis : undefined}
             initialChartTypes={editingId ? dashboard?.preferred_chart_types : undefined}
+            initialDatasetKey={editingId ? dashboard?.dataset_key : undefined}
           />
         ) : (
           <DashboardPage

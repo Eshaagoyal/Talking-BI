@@ -132,19 +132,29 @@ export default function Sidebar({ saved, active, pendingDashboardId, onSelect, o
                 style={{
                   width: "100%",
                   textAlign: "left",
-                  background: active?.id === d.id || pendingDashboardId === d.id ? "rgba(11,79,108,0.09)" : "transparent",
-                  border: active?.id === d.id || pendingDashboardId === d.id ? "1px solid rgba(11,79,108,0.22)" : "1px solid transparent",
+                  background:
+                    active?.id === d.id || pendingDashboardId === d.id
+                      ? "linear-gradient(180deg, rgba(11,79,108,0.18), rgba(11,116,144,0.14))"
+                      : "linear-gradient(180deg, #f1f5f9 0%, #e8eef5 100%)",
+                  border:
+                    active?.id === d.id || pendingDashboardId === d.id
+                      ? "1px solid rgba(11,79,108,0.34)"
+                      : "1px solid rgba(11,79,108,0.12)",
                   borderRadius: 10,
                   padding: "10px 12px",
                   marginBottom: 6,
                   fontSize: 13,
                   fontWeight: active?.id === d.id || pendingDashboardId === d.id ? 600 : 500,
-                  color: active?.id === d.id || pendingDashboardId === d.id ? P : "var(--text-2)",
+                  color: active?.id === d.id || pendingDashboardId === d.id ? P : "var(--text-1)",
                   cursor: "pointer",
                   overflow: "hidden",
                   textOverflow: "ellipsis",
                   whiteSpace: "nowrap",
-                  transition: "border-color 0.15s, background 0.15s",
+                  boxShadow:
+                    active?.id === d.id || pendingDashboardId === d.id
+                      ? "0 10px 18px -14px rgba(11,79,108,0.6)"
+                      : "0 4px 12px -10px rgba(11,79,108,0.45)",
+                  transition: "border-color 0.15s, background 0.15s, box-shadow 0.15s",
                 }}
                 title={d.query}
               >

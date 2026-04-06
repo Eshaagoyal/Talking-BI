@@ -53,8 +53,17 @@ def build_chart_data(raw_data: list, dashboard_plan: dict) -> dict:
         result = {k: v for k, v in result.items() if v != 0 and k != "Unknown"}
 
         # Sort and limit
-        max_items = 8 if chart_type == "pie" else 15
-        sorted_data = sorted(result.items(), key=lambda x: x[1], reverse=True)[:max_items]
+        if chart_type in ("line", "area"):
+            # Sort chronologically by the X-axis label
+            sorted_data = sorted(result.items(), key=lambda x: str(x[0]))
+            sorted_data = sorted_data[-15:] if len(result) > 15 else sorted_data
+        else:
+            sorted_data = sorted(result.items(), key=lambda x: x[1], reverse=True)
+            if chart_type == "pie":
+                # Keep pie readable without changing totals: top 7 + "Others".
+                sorted_data = _top_n_with_others(sorted_data, top_n=7)
+            else:
+                sorted_data = sorted_data[:15]
         chart_data = [{"name": k, "value": v} for k, v in sorted_data]
 
         dashboards[key] = {
@@ -99,3 +108,18 @@ def _clean_label(label: str) -> str:
     if len(label) > 30:
         label = label[:27] + "..."
     return label
+
+
+def _top_n_with_others(items: list, top_n: int = 7) -> list:
+    """
+    Return top N items plus an "Others" bucket (sum of the remainder).
+    Preserves overall totals while reducing pie clutter.
+    """
+    if len(items) <= top_n:
+        return items
+    head = items[:top_n]
+    tail = items[top_n:]
+    other_sum = round(sum(v for _, v in tail), 2)
+    if other_sum == 0:
+        return head
+    return head + [("Others", other_sum)]

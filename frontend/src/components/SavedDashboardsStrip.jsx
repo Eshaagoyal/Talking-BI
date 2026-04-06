@@ -7,26 +7,25 @@ export default function SavedDashboardsStrip({
   savedDashboards = [],
   activeSavedId,
   onSelectSaved,
-  onNew,
   accentKey = "cyan",
 }) {
   const accent = themeAccent(accentKey)
 
   const pill = (active) => ({
-    background: active ? accent : "var(--surface)",
-    border: active ? "1px solid transparent" : "1px solid var(--border)",
+    background: active ? `linear-gradient(180deg, ${accent}, ${accent}dd)` : "linear-gradient(180deg, #f1f5f9 0%, #e9eef5 100%)",
+    border: active ? "1px solid transparent" : `1px solid rgba(11,79,108,0.18)`,
     borderRadius: 999,
     padding: "7px 16px",
     fontSize: 13,
     fontWeight: active ? 600 : 500,
-    color: active ? "#fff" : "var(--text-2)",
+    color: active ? "#fff" : "var(--text-1)",
     cursor: "pointer",
     maxWidth: 260,
     overflow: "hidden",
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",
     flexShrink: 0,
-    boxShadow: active ? `0 4px 14px ${accent}45` : "var(--shadow)",
+    boxShadow: active ? `0 8px 22px -10px ${accent}72` : "0 6px 14px -12px rgba(15,23,42,0.45)",
     transition: "background 0.18s, color 0.18s, box-shadow 0.18s, border-color 0.18s",
   })
 
@@ -35,11 +34,11 @@ export default function SavedDashboardsStrip({
       className="saved-strip"
       style={{
         marginBottom: 24,
-        background: "linear-gradient(180deg, var(--surface) 0%, var(--surface2) 100%)",
+        background: "linear-gradient(180deg, #ffffff 0%, #f8fbfd 100%)",
         borderRadius: 16,
         padding: "14px 18px",
-        border: "1px solid var(--border)",
-        boxShadow: "var(--shadow)",
+        border: `1px solid ${accent}26`,
+        boxShadow: `0 12px 30px -22px ${accent}75`,
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
@@ -75,9 +74,6 @@ export default function SavedDashboardsStrip({
             </button>
           ))}
         </div>
-        <button type="button" onClick={onNew} style={pill(false)}>
-          + New dashboard
-        </button>
       </div>
     </div>
   )

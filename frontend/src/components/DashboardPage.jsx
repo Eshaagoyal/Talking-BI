@@ -51,6 +51,52 @@ function DataTable({ data, colors, themeColor }) {
 
 // Single dashboard card (for 2x2 grid)
 function DashboardCard({ dashboard, index, colors, themeColor, emphasized }) {
+  const [explanation, setExplanation] = useState("")
+  const [isExplaining, setIsExplaining] = useState(false)
+  const [isSpeaking, setIsSpeaking] = useState(false)
+
+  const toggleSpeech = () => {
+    if (!("speechSynthesis" in window)) {
+      alert("Text-to-speech is not supported in this browser.")
+      return
+    }
+    if (isSpeaking) {
+      window.speechSynthesis.cancel()
+      setIsSpeaking(false)
+      return
+    }
+    window.speechSynthesis.cancel()
+    const u = new SpeechSynthesisUtterance(explanation)
+    u.rate = 0.95
+    u.onend = () => setIsSpeaking(false)
+    u.onerror = () => setIsSpeaking(false)
+    window.speechSynthesis.speak(u)
+    setIsSpeaking(true)
+  }
+
+  const handleExplain = async () => {
+    if (isExplaining) return
+    setIsExplaining(true)
+    setExplanation("")
+    try {
+      const res = await fetch("http://127.0.0.1:8000/explain-chart", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: dashboard.title,
+          description: dashboard.description,
+          data: dashboard.data
+        })
+      })
+      const respJson = await res.json()
+      if (respJson.explanation) setExplanation(respJson.explanation)
+    } catch (e) {
+      setExplanation("Error loading explanation.")
+    } finally {
+      setIsExplaining(false)
+    }
+  }
+
   return (
     <div style={{
       background:"#fff",
@@ -83,11 +129,28 @@ function DashboardCard({ dashboard, index, colors, themeColor, emphasized }) {
             </p>
           </div>
         </div>
-        <span style={{
-          fontSize:9, textTransform:"uppercase", fontWeight:700,
-          background:`${themeColor}12`, color:themeColor,
-          padding:"3px 7px", borderRadius:4, flexShrink:0, marginLeft:8
-        }}>{dashboard.chart_type}</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0, marginLeft: 8 }}>
+          <button 
+            type="button"
+            onClick={handleExplain}
+            disabled={isExplaining}
+            className="no-print"
+            style={{
+               background: `linear-gradient(to right, ${themeColor}15, ${themeColor}25)`, 
+               border: `1px solid ${themeColor}40`,
+               borderRadius: 20, padding: "3px 10px", fontSize: 10,
+               color: themeColor, fontWeight: 700, cursor: isExplaining ? "wait" : "pointer",
+               display: "flex", alignItems: "center", gap: 4
+            }}
+          >
+            {isExplaining ? "Thinking..." : "✨ Explain"}
+          </button>
+          <span style={{
+            fontSize:9, textTransform:"uppercase", fontWeight:700,
+            background:`${themeColor}12`, color:themeColor,
+            padding:"3px 7px", borderRadius:4
+          }}>{dashboard.chart_type}</span>
+        </div>
       </div>
 
       {/* Chart */}
@@ -98,6 +161,31 @@ function DashboardCard({ dashboard, index, colors, themeColor, emphasized }) {
       {/* Data table */}
       <div style={{ padding:"0 16px 14px" }}>
         <DataTable data={dashboard.data} colors={colors} themeColor={themeColor} />
+        {explanation && (
+          <div className="no-print" style={{
+            marginTop: 12, padding: "12px 14px", background: `${themeColor}08`,
+            border: `1px solid ${themeColor}20`, borderRadius: 10,
+            fontSize: 12, color: "#475569", lineHeight: 1.6,
+            borderLeft: `3px solid ${themeColor}`
+          }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
+              <strong style={{ color: themeColor }}>✨ AI Chart Summary: </strong>
+              <button
+                type="button"
+                onClick={toggleSpeech}
+                title={isSpeaking ? "Stop reading" : "Read aloud"}
+                style={{
+                  background: isSpeaking ? `${themeColor}15` : "transparent",
+                  border: "none", cursor: "pointer", fontSize: 13,
+                  padding: "2px 6px", borderRadius: 4, display: "flex", alignItems: "center"
+                }}
+              >
+                {isSpeaking ? "⏹️" : "🔊"}
+              </button>
+            </div>
+            {explanation}
+          </div>
+        )}
       </div>
     </div>
   )
@@ -116,7 +204,7 @@ const dashSelectStyle = {
   outline: "none",
 }
 
-export default function DashboardPage({ dashboard, onNew, onEdit, onRegenerate }) {
+export default function DashboardPage({ dashboard, onEdit, onRegenerate }) {
   const printRef = useRef(null)
   const cardRefs = useRef([])
   const { dashboards, insights, kpis, sql_used, color_schema, row_count, query } = dashboard
@@ -137,6 +225,8 @@ export default function DashboardPage({ dashboard, onNew, onEdit, onRegenerate }
   const clean = (t) => t?.replace(/\*\*(.*?)\*\*/g, "$1").replace(/\*(.*?)\*/g, "$1") || ""
   const coverage = insights?.kpi_coverage_percent || 0
   const coverageColor = coverage >= 80 ? "#10b981" : coverage >= 50 ? "#f59e0b" : "#ef4444"
+  const reqCharts = dashboard?.data_quality?.requested_chart_types || []
+  const appliedCharts = dashboard?.data_quality?.applied_chart_types || []
 
   const handleDownloadPDF = async () => {
     if (pdfBusy) return
@@ -162,6 +252,7 @@ export default function DashboardPage({ dashboard, onNew, onEdit, onRegenerate }
       num_visualizations: Math.min(4, Math.max(2, n)),
       color_schema: editTheme,
       preferred_chart_types: dashboard.preferred_chart_types || [],
+      dataset_key: dashboard.dataset_key || dashboard.focus_tables?.[0] || "primary",
     })
   }
 
@@ -171,13 +262,6 @@ export default function DashboardPage({ dashboard, onNew, onEdit, onRegenerate }
       {/* Editor chrome — excluded from report PDF & browser print */}
       <div className="no-print" style={{ marginBottom: 24 }}>
         <div style={{ display:"flex", alignItems:"center", gap:12, flexWrap:"wrap", marginBottom: 16 }}>
-          <button type="button" onClick={onNew} style={{
-            display:"inline-flex", alignItems:"center", gap:8,
-            background:"var(--surface)", border:"1px solid var(--border)",
-            borderRadius:12, padding:"10px 18px", fontSize:13,
-            fontWeight:600, color:"var(--text-2)", cursor:"pointer",
-            boxShadow:"var(--shadow)"
-          }}>+ New dashboard</button>
           <button type="button" onClick={onEdit} style={{
             display:"inline-flex", alignItems:"center", gap:8,
             background:"var(--surface2)", border:"1px solid var(--border)",
@@ -268,6 +352,11 @@ export default function DashboardPage({ dashboard, onNew, onEdit, onRegenerate }
           <div style={{ fontSize:12, color:"var(--text-3)", marginTop:10 }}>
             Plan: AI planner · Theme: {themeLabel(color_schema)} · {row_count?.toLocaleString()} rows analysed
           </div>
+          {(reqCharts.length > 0 || appliedCharts.length > 0) && (
+            <div style={{ fontSize:12, color:"var(--text-3)", marginTop:6 }}>
+              Charts requested: {reqCharts.join(", ") || "—"} · applied: {appliedCharts.join(", ") || "—"}
+            </div>
+          )}
         </div>
 
         {/* KPI metric cards */}

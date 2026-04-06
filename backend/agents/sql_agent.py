@@ -1,18 +1,21 @@
 import os
 import re
-import json
 import time
 import psycopg2
 import psycopg2.extras
 import google.generativeai as genai
 from dotenv import load_dotenv
+from typing import Any, Dict, List, Optional, Tuple
 
 load_dotenv()
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 model = genai.GenerativeModel("gemini-2.5-flash")
 
+# Tables to ignore when picking default / listing (system noise)
+IGNORED_TABLE_PREFIXES = ("pg_",)
+IGNORED_TABLE_NAMES = frozenset({"spatial_ref_sys"})
 
-# ─── Gemini caller with retry on quota errors ────────────────────────────────
+
 def call_gemini(prompt: str) -> str:
     for attempt in range(3):
         try:
@@ -26,7 +29,6 @@ def call_gemini(prompt: str) -> str:
     return ""
 
 
-# ─── Database connection ─────────────────────────────────────────────────────
 def get_connection():
     url = os.getenv("SUPABASE_DB_URL")
     if not url:
@@ -50,17 +52,37 @@ def test_connection():
     return {"status": "connected", "table": table[0] if table else None, "rows": count}
 
 
-# ─── Phase 1: Autonomous schema exploration (SQLAgent arXiv 2602.01952) ──────
+def _detect_text_date_format(samples: List[str]) -> Optional[Tuple[str, str]]:
+    """
+    If values look like dates stored as text, return (PostgreSQL TO_DATE format string, example).
+    """
+    if not samples:
+        return None
+    checks = [
+        (re.compile(r"^\d{2}-\d{2}-\d{4}$"), "DD-MM-YYYY"),
+        (re.compile(r"^\d{4}-\d{2}-\d{2}(?:[ T].*)?$"), "YYYY-MM-DD"),
+        (re.compile(r"^\d{2}/\d{2}/\d{4}$"), "MM/DD/YYYY"),
+        (re.compile(r"^\d{4}-\d{2}$"), "YYYY-MM"),
+    ]
+    for raw in samples[:8]:
+        s = str(raw).strip()
+        head = s[:10] if len(s) >= 10 else s
+        for rx, fmt in checks:
+            if fmt == "YYYY-MM":
+                if rx.match(s):
+                    return (fmt, s)
+            elif rx.match(head) or rx.match(s):
+                return (fmt, s)
+    return None
+
+
 def explore_database() -> dict:
     """
-    Autonomously explore any database — reads tables, columns, types,
-    sample values, null counts, cardinality, and numeric stats.
-    Works with ANY dataset uploaded to Supabase — no hardcoding.
+    SQLAgent-style exploration (arXiv 2602.01952): schema, samples, stats, date semantics.
     """
     conn = get_connection()
     cur = conn.cursor()
 
-    # Discover all public tables
     cur.execute("""
         SELECT table_name FROM information_schema.tables
         WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
@@ -74,7 +96,11 @@ def explore_database() -> dict:
     exploration = {}
 
     for table in tables:
-        # Get column metadata
+        if table in IGNORED_TABLE_NAMES:
+            continue
+        if any(table.startswith(p) for p in IGNORED_TABLE_PREFIXES):
+            continue
+
         cur.execute("""
             SELECT column_name, data_type, is_nullable
             FROM information_schema.columns
@@ -83,57 +109,53 @@ def explore_database() -> dict:
         """, (table,))
         cols_meta = cur.fetchall()
 
-        # Row count
         cur.execute(f'SELECT COUNT(*) FROM "{table}";')
         row_count = cur.fetchone()[0]
 
         columns = []
         for col_name, col_type, nullable in cols_meta:
-            col_info = {
+            col_info: Dict[str, Any] = {
                 "name": col_name,
                 "type": col_type,
                 "nullable": nullable == "YES",
                 "samples": [],
                 "null_count": 0,
                 "unique_count": 0,
-                "stats": {}
+                "stats": {},
+                "text_date_format": None,
+                "date_expr": None,
             }
 
-            # Null count
             try:
                 cur.execute(f'SELECT COUNT(*) FROM "{table}" WHERE "{col_name}" IS NULL;')
                 col_info["null_count"] = cur.fetchone()[0]
             except Exception:
                 pass
 
-            # Skip mostly-null columns
             null_pct = col_info["null_count"] / row_count if row_count > 0 else 0
             col_info["null_pct"] = round(null_pct * 100, 1)
 
-            # Sample values (only if not mostly null)
             if null_pct < 0.8:
                 try:
                     cur.execute(f"""
                         SELECT DISTINCT "{col_name}"
                         FROM "{table}"
                         WHERE "{col_name}" IS NOT NULL
-                        LIMIT 6;
+                        LIMIT 8;
                     """)
                     col_info["samples"] = [str(r[0]) for r in cur.fetchall()]
                 except Exception:
                     pass
 
-                # Cardinality
                 try:
                     cur.execute(f'SELECT COUNT(DISTINCT "{col_name}") FROM "{table}";')
                     col_info["unique_count"] = cur.fetchone()[0]
                 except Exception:
                     pass
 
-            # Numeric stats
             if col_type in (
                 "numeric", "integer", "bigint", "smallint",
-                "double precision", "real", "decimal", "float"
+                "double precision", "real", "decimal", "float",
             ):
                 try:
                     cur.execute(f"""
@@ -151,33 +173,128 @@ def explore_database() -> dict:
                             "min": float(s[0]),
                             "max": float(s[1]),
                             "avg": float(s[2]),
-                            "sum": float(s[3])
+                            "sum": float(s[3]),
                         }
                 except Exception:
                     pass
 
+            if col_type in ("text", "character varying", "varchar", "character") and col_info["samples"]:
+                hint = _detect_text_date_format(col_info["samples"])
+                if hint:
+                    fmt, _ex = hint
+                    col_info["text_date_format"] = fmt
+                    col_info["date_expr"] = f"TO_DATE(\"{col_name}\", '{fmt}')"
+
             columns.append(col_info)
 
-        exploration[table] = {
-            "row_count": row_count,
-            "columns": columns
-        }
+        exploration[table] = {"row_count": row_count, "columns": columns}
 
     cur.close()
     conn.close()
     return exploration
 
 
-def build_schema_context(exploration: dict) -> str:
-    """
-    Convert explored database info into a rich prompt context.
-    Dynamically detects: date formats, high-null columns,
-    numeric metrics, categorical dimensions, cardinality.
-    """
-    lines = []
-    lines.append("=== DATABASE SCHEMA (auto-explored) ===\n")
+def _eligible_table_names(exploration: dict) -> List[str]:
+    return [
+        t
+        for t in exploration
+        if t not in IGNORED_TABLE_NAMES and not any(t.startswith(p) for p in IGNORED_TABLE_PREFIXES)
+    ]
 
-    for table_name, table_info in exploration.items():
+
+def _default_primary_table(exploration: dict) -> str:
+    """When dataset_key is empty or 'primary', pick a sensible default table."""
+    elig = _eligible_table_names(exploration)
+    if not elig:
+        raise ValueError("No usable tables found in the public schema. Upload a dataset or create a table in Supabase.")
+    for prefer in ("global_superstore", "sales"):
+        if prefer in elig:
+            return prefer
+    return max(elig, key=lambda t: exploration[t]["row_count"])
+
+
+def resolve_focus_tables(exploration: dict, dataset_key: str) -> Tuple[List[str], str]:
+    """
+    NL→SQL targets exactly one table: the selected dataset (Postgres table name).
+    dataset_key 'primary' or empty → default (global_superstore, then sales, then largest table).
+    """
+    raw = (dataset_key or "").strip()
+    if not raw or raw == "primary":
+        key = _default_primary_table(exploration)
+    else:
+        key = raw
+
+    if key not in exploration:
+        raise ValueError(
+            f'Unknown dataset "{key}". Use GET /datasets for tables available in your database.'
+        )
+    elig = _eligible_table_names(exploration)
+    if key not in elig:
+        raise ValueError(f'Table "{key}" cannot be used as a dataset (filtered).')
+    return ([key], "")
+
+
+def list_datasets() -> List[Dict[str, Any]]:
+    """
+    Lightweight list of public tables (name + row count) for the dataset picker.
+    Same eligibility rules as resolve_focus_tables.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT table_name FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+        ORDER BY table_name;
+        """
+    )
+    names = [row[0] for row in cur.fetchall()]
+    out: List[Dict[str, Any]] = []
+    for name in names:
+        if name in IGNORED_TABLE_NAMES:
+            continue
+        if any(name.startswith(p) for p in IGNORED_TABLE_PREFIXES):
+            continue
+        cur.execute(f'SELECT COUNT(*) FROM "{name}";')
+        cnt = int(cur.fetchone()[0])
+        out.append({"name": name, "row_count": cnt})
+    cur.close()
+    conn.close()
+    return out
+
+
+def build_date_casting_block(exploration: dict, focus_tables: List[str]) -> str:
+    lines = ["=== DATE CASTING (mandatory for TEXT/VARCHAR date columns) ===\n"]
+    found = False
+    for t in focus_tables:
+        if t not in exploration:
+            continue
+        for col in exploration[t]["columns"]:
+            if col.get("date_expr") and col.get("text_date_format"):
+                found = True
+                lines.append(
+                    f'- Table "{t}" column "{col["name"]}" is stored as {col["type"]} but values match '
+                    f"{col['text_date_format']}. For filters, sorting, or date_trunc use: {col['date_expr']}\n"
+                    f'  Example month bucket: date_trunc(\'month\', {col["date_expr"]})\n'
+                )
+    if not found:
+        lines.append("(No text-as-date columns detected in focus tables.)\n")
+    return "".join(lines)
+
+
+def build_schema_context(exploration: dict, focus_tables: List[str], preamble_note: str = "") -> str:
+    lines = []
+    lines.append("=== DATABASE SCHEMA (auto-explored, SQLAgent / explore-then-generate) ===\n")
+    if preamble_note:
+        lines.append(preamble_note)
+    lines.append(f"=== FOCUS TABLES (you MUST query only these unless joining within them) ===\n")
+    lines.append(", ".join(f'"{t}"' for t in focus_tables) + "\n\n")
+    lines.append(build_date_casting_block(exploration, focus_tables))
+
+    for table_name in focus_tables:
+        if table_name not in exploration:
+            continue
+        table_info = exploration[table_name]
         row_count = table_info["row_count"]
         lines.append(f'TABLE: "{table_name}" — {row_count:,} rows\n')
         lines.append("COLUMNS:\n")
@@ -190,84 +307,67 @@ def build_schema_context(exploration: dict) -> str:
             null_pct = col["null_pct"]
             unique = col["unique_count"]
 
-            # Build column line
             parts = [f'  "{name}" ({dtype})']
 
-            # Null warning
             if null_pct > 50:
                 parts.append(f"⚠ {null_pct}% NULL — avoid unless needed")
                 lines.append(" | ".join(parts) + "\n")
                 continue
 
-            # Numeric stats
             if stats:
                 parts.append(
                     f"min={stats['min']:,} max={stats['max']:,} "
                     f"avg={stats['avg']:,} sum={stats['sum']:,}"
                 )
 
-            # Sample values
             if samples:
                 sample_str = " / ".join(samples[:4])
                 parts.append(f"e.g. {sample_str}")
 
-            # Detect date format from samples
-            if samples:
-                s0 = samples[0]
-                if re.match(r'^\d{2}-\d{2}-\d{4}$', s0):
-                    parts.append("DATE FORMAT DD-MM-YYYY → use TO_DATE(col,'DD-MM-YYYY')")
-                elif re.match(r'^\d{4}-\d{2}-\d{2}', s0):
-                    parts.append("DATE FORMAT YYYY-MM-DD → use TO_DATE(col,'YYYY-MM-DD')")
-                elif re.match(r'^\d{2}/\d{2}/\d{4}$', s0):
-                    parts.append("DATE FORMAT MM/DD/YYYY → use TO_DATE(col,'MM/DD/YYYY')")
+            if col.get("text_date_format"):
+                parts.append(
+                    f"TEXT-DATE as {col['text_date_format']} → use {col['date_expr']} for date logic"
+                )
 
-            # Cardinality hint
-            if unique > 0 and dtype not in ("numeric", "integer", "bigint", "double precision"):
+            if unique > 0 and dtype not in (
+                "numeric", "integer", "bigint", "double precision", "real", "decimal", "float",
+            ):
                 if unique <= 20:
-                    parts.append(f"low cardinality ({unique} values) — GOOD for GROUP BY")
+                    parts.append(f"low cardinality ({unique}) — GOOD for GROUP BY")
                 elif unique <= 200:
-                    parts.append(f"medium cardinality ({unique} values) — OK for GROUP BY")
+                    parts.append(f"medium cardinality ({unique}) — OK for GROUP BY")
                 else:
-                    parts.append(f"high cardinality ({unique} values) — AVOID GROUP BY")
+                    parts.append(f"high cardinality ({unique}) — avoid GROUP BY on raw column; prefer buckets/top-N")
 
             lines.append(" | ".join(parts) + "\n")
 
         lines.append("\n")
 
-    lines.append("""=== SQL RULES (follow ALL) ===
-1. Always double-quote column names: "Sales", "Order Date", "Sub-Category"
-2. Use detected date format when filtering or extracting dates
-3. GROUP BY all non-aggregated SELECT columns
-4. ORDER BY main metric DESC
-5. LIMIT 200 always
-6. Round money: ROUND(SUM("col")::numeric, 2)
-7. Avoid high-null and high-cardinality columns for grouping
-8. Never use columns marked with ⚠ NULL warning for aggregation
+    lines.append("""=== SQL RULES (PostgreSQL / Supabase) ===
+1. Use ONLY tables listed under FOCUS TABLES. Double-quote all identifiers: "Sales", "Order Date".
+2. For any column documented as TEXT-DATE, never compare or order it as a plain string for time intent — use TO_DATE or date_trunc on the given expression.
+3. GROUP BY every non-aggregated selected column.
+4. ORDER BY the main metric DESC (or relevant date ASC for trends).
+5. Always end with LIMIT 200 (exactly).
+6. Money/numbers: cast safely, e.g. SUM("amount"::numeric) or regexp_replace then ::numeric if values are messy strings.
+7. Do not SELECT * — select only needed columns.
+8. No semicolon at end of your answer.
 """)
-
     return "".join(lines)
 
 
 def extract_sql_from_response(raw: str) -> str:
-    """
-    Extract clean SQL from Gemini output.
-    Handles thinking models that write reasoning before the SQL.
-    Takes the LAST SELECT...LIMIT block as the final answer.
-    """
-    # Strip markdown fences
     raw = re.sub(r"```sql\s*", "", raw, flags=re.IGNORECASE)
     raw = re.sub(r"```\s*", "", raw).strip()
 
-    # Find all SELECT...LIMIT blocks — last one is the final clean answer
     matches = re.findall(
         r"(SELECT\b.+?LIMIT\s+\d+)",
         raw,
-        re.DOTALL | re.IGNORECASE
+        re.DOTALL | re.IGNORECASE,
     )
     if matches:
         return matches[-1].strip().rstrip(";")
 
-    # Fallback: grab everything from first SELECT onwards
     lines = raw.split("\n")
     result, collecting = [], False
     for line in lines:
@@ -279,29 +379,43 @@ def extract_sql_from_response(raw: str) -> str:
     return sql if sql else raw.strip().rstrip(";")
 
 
-# ─── Phase 2: SQL generation ─────────────────────────────────────────────────
-def generate_sql(user_query: str, kpis: list, schema_context: str) -> str:
-    kpi_text = ", ".join(kpis) if kpis else "main revenue and profit metrics"
+def generate_sql(
+    user_query: str,
+    kpis: list,
+    schema_context: str,
+    previous_error: Optional[str] = None,
+    failed_sql: Optional[str] = None,
+) -> str:
+    kpi_text = ", ".join(kpis) if kpis else "(none — infer from USER REQUEST and schema only)"
 
-    prompt = f"""You are a senior PostgreSQL data analyst working with a sales database.
+    repair = ""
+    if previous_error:
+        repair = f"""
+=== PREVIOUS ATTEMPT FAILED (fix and return ONLY corrected SQL) ===
+PostgreSQL error:
+{previous_error}
+
+Failed SQL:
+{failed_sql or "(none)"}
+
+Fix: use only real table/column names from the schema, correct TO_DATE formats, valid GROUP BY, and LIMIT 200.
+"""
+
+    prompt = f"""You are a senior PostgreSQL analyst (SQLAgent-style: schema-grounded SQL only).
 
 {schema_context}
+{repair}
 
 USER REQUEST: "{user_query}"
-KPIs TO FOCUS ON: {kpi_text}
+USER-SUPPLIED KPIs (map to the closest matching numeric columns by name): {kpi_text}
 
-Write ONE optimal PostgreSQL SELECT query that fully answers this request.
-Follow ALL SQL rules listed above.
+Instructions:
+- Produce ONE SELECT query that answers the user with aggregations appropriate to the question.
+- Prefer SUM/AVG/COUNT on columns whose names align with the KPI tokens above (e.g. "sales" → "Sales", "profit" → "Profit").
+- If the user implies time trends, use date_trunc on the documented date expression for TEXT dates.
+- Prefer a single FOCUS table; join only if the question clearly needs two relations present in schema.
 
-Think about:
-- Which table has the relevant data?
-- Which columns are the right dimensions (GROUP BY)?
-- Which columns are the right metrics (aggregate)?
-- Does this need date parsing?
-- What is the best ORDER BY?
-
-OUTPUT: Return ONLY the raw SQL query.
-No explanation. No markdown. No backticks. No semicolon at end. Start with SELECT.
+OUTPUT: Return ONLY the raw SQL. No markdown, no backticks, no explanation, no trailing semicolon. Must include LIMIT 200.
 
 SQL:"""
 
@@ -310,22 +424,29 @@ SQL:"""
 
 
 def run_sql(sql: str) -> list:
+    # 1. Prevent destructive AI queries (SQL Injection safety)
+    upper_sql = sql.upper()
+    forbidden = ["DROP ", "DELETE ", "UPDATE ", "INSERT ", "ALTER ", "TRUNCATE "]
+    if any(fw in upper_sql for fw in forbidden):
+        raise ValueError("Security violation: Destructive SQL commands are strictly prohibited.")
+
     conn = get_connection()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     try:
+        # 2. Prevent runaway queries (15 seconds maximum execution time)
+        cur.execute("SET statement_timeout = 15000;")
         cur.execute(sql)
         rows = cur.fetchall()
     except Exception as e:
         cur.close()
         conn.close()
-        raise Exception(f"SQL failed: {str(e)}\n\nSQL attempted:\n{sql}")
+        raise Exception(f"{str(e)}")
     cur.close()
     conn.close()
     return [dict(r) for r in rows]
 
 
 def get_schema():
-    """Returns schema in simple format for /schema endpoint."""
     exploration = explore_database()
     result = {}
     for table, info in exploration.items():
@@ -336,55 +457,34 @@ def get_schema():
     return result
 
 
-def run_sql_agent(user_query: str, kpis: list) -> dict:
+def run_sql_agent(user_query: str, kpis: list, dataset_key: str = "primary") -> dict:
     """
-    Full SQLAgent pipeline implementing arXiv 2602.01952:
-    Phase 1: Explore database autonomously
-    Phase 2: Generate SQL using explored context
-    Phase 3: Execute and return results
+    Full pipeline: explore → focus table → grounded prompt → SQL → execute → one repair pass.
     """
-    # Phase 1 — explore
     exploration = explore_database()
-    schema_context = build_schema_context(exploration)
+    focus, note = resolve_focus_tables(exploration, dataset_key or "primary")
+    schema_context = build_schema_context(exploration, focus, preamble_note=note)
 
-    # Phase 2 — generate SQL
     sql = generate_sql(user_query, kpis, schema_context)
-
-    # Phase 3 — execute
-    data = run_sql(sql)
+    err_detail = ""
+    try:
+        data = run_sql(sql)
+    except Exception as e1:
+        err_detail = str(e1)
+        sql = generate_sql(
+            user_query,
+            kpis,
+            schema_context,
+            previous_error=err_detail,
+            failed_sql=sql,
+        )
+        data = run_sql(sql)
 
     return {
         "schema_context": schema_context,
         "sql": sql,
         "data": data,
-        "row_count": len(data)
+        "row_count": len(data),
+        "focus_tables": focus,
+        "dataset_key": focus[0] if focus else None,
     }
-
-
-def extract_kpis_from_query(query: str) -> list:
-    """
-    Auto-detect KPIs from natural language query.
-    Returns list of KPI strings. Falls back to ["sales", "profit"].
-    """
-    prompt = f"""Extract the business KPI metric names from this query.
-Query: "{query}"
-
-Rules:
-- Only extract measurable numeric metrics, not dimensions/categories
-- Use lowercase
-- Common examples: sales, revenue, profit, quantity, discount, margin, cost, units
-
-Return ONLY a valid JSON array like: ["sales", "profit"]
-No explanation. No markdown. Just the array."""
-
-    try:
-        raw = call_gemini(prompt)
-        raw = re.sub(r"```json\s*|```\s*", "", raw).strip()
-        # Find JSON array in response
-        match = re.search(r'\[.*?\]', raw, re.DOTALL)
-        if match:
-            kpis = json.loads(match.group())
-            return [k.lower() for k in kpis if isinstance(k, str)] or ["sales", "profit"]
-    except Exception:
-        pass
-    return ["sales", "profit"]

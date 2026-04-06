@@ -23,6 +23,24 @@ def call_gemini(prompt: str) -> str:
     return ""
 
 
+def _kpi_coverage_from_facts(dashboards: dict, kpis: list) -> tuple:
+    """Ground KPI coverage in chart y_axis / x_axis names (InsightEval-style verification)."""
+    if not kpis:
+        return 100, [], []
+    covered = set()
+    for d in dashboards.values():
+        yax = str(d.get("y_axis") or "").lower().replace("_", " ")
+        xax = str(d.get("x_axis") or "").lower().replace("_", " ")
+        for k in kpis:
+            kl = k.lower().replace("_", " ")
+            if kl in yax or kl in xax:
+                covered.add(k)
+    cov_list = [k for k in kpis if k in covered]
+    miss_list = [k for k in kpis if k not in covered]
+    pct = int(round(100 * len(cov_list) / len(kpis))) if kpis else 100
+    return pct, cov_list, miss_list
+
+
 def strip_markdown(text: str) -> str:
     """Remove all markdown formatting from Gemini output."""
     if not text:
@@ -63,8 +81,9 @@ def evaluate_insights(
 
     kpi_text = ", ".join(kpis)
 
-    prompt = f"""You are InsightEval — a senior business intelligence analyst (arXiv 2511.22884).
-Evaluate these dashboards and generate professional business insights.
+    prompt = f"""You are InsightEval — a senior BI analyst (arXiv 2511.22884).
+You must ground every claim in the structured numbers below (top_results, top_value, bottom_value).
+Do not invent metrics or categories not present in DASHBOARD RESULTS.
 
 USER ASKED: "{user_query}"
 REQUESTED KPIs: {kpi_text}
@@ -75,23 +94,19 @@ DASHBOARD RESULTS:
 YOUR TASKS:
 
 1. INSIGHT SUMMARY (3-5 sentences):
-   - Reference specific numbers from the data
-   - Identify top performer, bottom performer, key trend
-   - Write like a real business analyst report
-   - Plain text only — absolutely no markdown, no bold, no bullets
+   - Every sentence must cite concrete values from top_results or top_value/bottom_value (names and amounts).
+   - Plain text only — no markdown.
 
 2. KPI COVERAGE SCORE:
-   - Check which of [{kpi_text}] actually appear in the dashboard results
-   - Score = covered / total * 100 (integer)
+   - A KPI is "covered" if it appears in a y_axis name or clearly in the measured values shown.
+   - Integer 0-100.
 
-3. RECOMMENDATIONS (3 specific actions):
-   - Each must reference actual data values
-   - Actionable and specific
-   - Plain text only — no markdown, no bold
+3. RECOMMENDATIONS (3):
+   - Each references a specific number from the data above.
 
-4. TOP INSIGHT (1 sentence with a specific number)
+4. TOP INSIGHT: one sentence with one specific number from the data.
 
-CRITICAL: Use plain text ONLY. No **bold**. No *italic*. No bullets. No markdown whatsoever.
+CRITICAL: Plain text only. No markdown.
 
 Return ONLY this exact JSON structure:
 {{
@@ -119,14 +134,16 @@ Return ONLY this exact JSON structure:
 
     try:
         result = json.loads(raw)
-        # Strip any remaining markdown from all text fields
         result["insight_summary"] = strip_markdown(result.get("insight_summary", ""))
         result["top_insight"] = strip_markdown(result.get("top_insight", ""))
         result["recommendations"] = [
             strip_markdown(r) for r in result.get("recommendations", [])
         ]
-        # Ensure coverage percent is an integer
-        result["kpi_coverage_percent"] = int(result.get("kpi_coverage_percent", 75))
+        h_pct, h_cov, h_miss = _kpi_coverage_from_facts(dashboards, kpis)
+        llm_pct = int(result.get("kpi_coverage_percent", h_pct))
+        result["kpi_coverage_percent"] = min(100, max(llm_pct, h_pct))
+        result["kpis_covered"] = h_cov
+        result["kpis_missing"] = h_miss
         return result
 
     except (json.JSONDecodeError, Exception):

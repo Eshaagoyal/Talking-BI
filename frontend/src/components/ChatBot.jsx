@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react"
 import { themeAccent } from "../themeOptions"
 import VoiceMicButton from "./VoiceMicButton"
 import { speakText, stopSpeaking } from "../utils/voiceOutput"
+import { apiUrl } from "../api"
 
 const segBase = {
   display: "inline-flex",
@@ -54,7 +55,7 @@ export default function GlobalChat({ activeDashboard }) {
     try {
       const dashList = activeDashboard ? Object.values(activeDashboard.dashboards || {}) : []
 
-      const res = await fetch("http://127.0.0.1:8000/chat", {
+      const res = await fetch(apiUrl("/chat"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -64,13 +65,20 @@ export default function GlobalChat({ activeDashboard }) {
                 query: activeDashboard.query,
                 kpis: activeDashboard.kpis,
                 insight_summary: activeDashboard.insights?.insight_summary,
-                dashboards: Object.fromEntries(dashList.map((d) => [d.title, { data: d.data?.slice(0, 6) }])),
+                dashboards: Object.fromEntries(dashList.map((d) => [d.title, { data: d.data?.slice(0, 15) }])),
               }
             : { query: "No dashboard loaded yet. Answer general BI questions." },
         }),
       })
-      const data = await res.json()
-      const reply = data.response || "Sorry, I couldn't answer that."
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        const d = data.detail
+        const errMsg =
+          typeof d === "string" ? d : Array.isArray(d) ? d.map((x) => x.msg || String(x)).join("; ") : "Request failed."
+        setHistory((h) => [...h, { role: "ai", text: errMsg }])
+        return
+      }
+      const reply = (data.response && String(data.response).trim()) || "Sorry, I couldn't answer that."
       setHistory((h) => [...h, { role: "ai", text: reply }])
     } catch {
       setHistory((h) => [...h, { role: "ai", text: "Connection error. Make sure the backend is running." }])

@@ -5,6 +5,11 @@ import {
   Tooltip, Legend, ResponsiveContainer,
 } from "recharts"
 
+const PIE_CONTRAST_COLORS = [
+  "#2563eb", "#059669", "#d97706", "#7c3aed", "#dc2626",
+  "#0d9488", "#b45309", "#4f46e5", "#15803d", "#be123c",
+]
+
 export const fmt = (v) => {
   if (typeof v !== "number") return String(v)
   if (Math.abs(v) >= 1000000) return `$${(v / 1000000).toFixed(2)}M`
@@ -92,28 +97,35 @@ export function ChartBlock({ dashboard, colors, height = 220 }) {
   }
 
   if (chart_type === "pie") {
+    const pieColors = data.map((_, i) => PIE_CONTRAST_COLORS[i % PIE_CONTRAST_COLORS.length])
     return (
       <ResponsiveContainer width="100%" height={height}>
-        <PieChart>
+        <PieChart margin={{ top: 8, right: 22, left: 22, bottom: 22 }}>
           <Pie
             data={data}
             dataKey="value"
             nameKey="name"
             cx="50%"
-            cy="45%"
-            outerRadius={height > 180 ? 80 : 44}
+            cy="44%"
+            outerRadius={height > 180 ? 72 : 44}
             innerRadius={height > 180 ? 28 : 12}
             paddingAngle={2}
-            label={height > 180 ? ({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%` : false}
-            labelLine={height > 180}
+            label={false}
+            labelLine={false}
             isAnimationActive={false}
           >
             {data.map((_, i) => (
-              <Cell key={i} fill={colors[i % colors.length]} />
+              <Cell key={i} fill={pieColors[i]} />
             ))}
           </Pie>
           <Tooltip formatter={(v) => [fmt(v)]} {...tip} />
-          {height > 180 && <Legend formatter={(v) => <span style={{ fontSize: 11, color: "#475569" }}>{v}</span>} />}
+          {height >= 180 && (
+            <Legend
+              verticalAlign="bottom"
+              align="center"
+              formatter={(v) => <span style={{ fontSize: 11, color: "#475569" }}>{v}</span>}
+            />
+          )}
         </PieChart>
       </ResponsiveContainer>
     )

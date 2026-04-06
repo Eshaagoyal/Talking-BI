@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { useState } from "react"
 
 const EXAMPLES = [
   { query: "Show me sales and profit by category and region", kpis: ["sales", "profit"] },
@@ -22,28 +22,6 @@ export default function QueryForm({ onSubmit, loading }) {
   const [kpiInput, setKpiInput] = useState("")
   const [color, setColor] = useState("indigo")
   const [numViz, setNumViz] = useState(4)
-  const [detecting, setDetecting] = useState(false)
-
-  // Auto-detect KPIs when user stops typing
-  useEffect(() => {
-    if (!query.trim() || query.length < 15) return
-    const timer = setTimeout(() => autoDetect(query), 900)
-    return () => clearTimeout(timer)
-  }, [query])
-
-  const autoDetect = async (q) => {
-    setDetecting(true)
-    try {
-      const res = await fetch("http://127.0.0.1:8000/extract-kpis", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: q })
-      })
-      const data = await res.json()
-      if (data.kpis?.length > 0) setKpis(data.kpis)
-    } catch (e) {}
-    finally { setDetecting(false) }
-  }
 
   const addKpi = () => {
     const k = kpiInput.trim().toLowerCase()
@@ -56,11 +34,11 @@ export default function QueryForm({ onSubmit, loading }) {
   const removeKpi = (k) => setKpis(kpis.filter(x => x !== k))
 
   const handleSubmit = () => {
-    if (!query.trim()) return
+    if (!query.trim() || kpis.length === 0) return
     const selectedColor = COLORS.find(c => c.name === color)
     onSubmit({
       query,
-      kpis: kpis.length > 0 ? kpis : ["sales", "profit"],
+      kpis,
       num_visualizations: numViz,
       color_schema: color,
       color_primary: selectedColor?.primary,
@@ -117,7 +95,7 @@ export default function QueryForm({ onSubmit, loading }) {
         {/* KPI input */}
         <div style={{ flex: 3, minWidth: 240 }}>
           <label style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", display: "block", marginBottom: 6 }}>
-            KPIs to track {detecting && <span style={{ color: "var(--accent)", marginLeft: 6 }}>auto-detecting...</span>}
+            KPIs to track (required)
           </label>
           <div style={{ display: "flex", gap: 6 }}>
             <input
@@ -153,7 +131,7 @@ export default function QueryForm({ onSubmit, loading }) {
             ))}
             {kpis.length === 0 && (
               <span style={{ fontSize: 11, color: "var(--text-muted)", alignSelf: "center" }}>
-                Auto-detected from query or defaults to sales + profit
+                Add at least one KPI before generating
               </span>
             )}
           </div>
@@ -205,16 +183,16 @@ export default function QueryForm({ onSubmit, loading }) {
         </div>
 
         {/* Submit button */}
-        <button onClick={handleSubmit} disabled={loading || !query.trim()} style={{
+        <button onClick={handleSubmit} disabled={loading || !query.trim() || kpis.length === 0} style={{
           flex: 1, minWidth: 200, height: 42,
-          background: loading || !query.trim()
+          background: loading || !query.trim() || kpis.length === 0
             ? "var(--border)"
             : "linear-gradient(135deg, #4f46e5, #7c3aed)",
           border: "none", borderRadius: "var(--radius)",
-          color: loading || !query.trim() ? "var(--text-muted)" : "#fff",
-          fontSize: 14, fontWeight: 600, cursor: loading || !query.trim() ? "not-allowed" : "pointer",
+          color: loading || !query.trim() || kpis.length === 0 ? "var(--text-muted)" : "#fff",
+          fontSize: 14, fontWeight: 600, cursor: loading || !query.trim() || kpis.length === 0 ? "not-allowed" : "pointer",
           display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
-          boxShadow: loading || !query.trim() ? "none" : "0 4px 14px rgba(79,70,229,0.35)",
+          boxShadow: loading || !query.trim() || kpis.length === 0 ? "none" : "0 4px 14px rgba(79,70,229,0.35)",
           transition: "all 0.2s"
         }}>
           {loading ? "⏳ Generating..." : "✨ Generate Dashboards"}
