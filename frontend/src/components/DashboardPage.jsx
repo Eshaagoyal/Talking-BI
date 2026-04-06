@@ -79,7 +79,7 @@ function DashboardCard({ dashboard, index, colors, themeColor, emphasized }) {
     setIsExplaining(true)
     setExplanation("")
     try {
-      const res = await fetch("http://127.0.0.1:8000/explain-chart", {
+      const res = await fetch("http://16.171.238.112:8000/explain-chart", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
