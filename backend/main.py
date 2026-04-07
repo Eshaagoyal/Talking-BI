@@ -687,7 +687,7 @@ Raw Data:
 {json.dumps(req.data, default=str)[:3000]}
 """
         response = client.chat.completions.create(
-            model="grok-beta",
+            model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
             messages=[{"role": "user", "content": prompt}]
         )
         text = response.choices[0].message.content.strip()

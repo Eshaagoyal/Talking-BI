@@ -224,17 +224,20 @@ def _finalize_dashboard_plan(
                 dash["x_axis"] = roles["date"][0]
                 issues.append(f"{key}: {dash['chart_type']} chart x_axis shifted to date column '{dash['x_axis']}'.")
 
-        # Reduce duplicate panels: avoid same (type, x, y, aggregation) across dashboards.
-        sig = (
-            dash.get("chart_type"),
-            dash.get("x_axis"),
-            dash.get("y_axis"),
-            str(dash.get("aggregation", "SUM")).upper(),
+        # Reduce duplicate panels: avoid plotting the exact same axes twice.
+        # We ignore aggregation here because plotting identical columns with different math 
+        # usually results in visually redundant charts that waste dashboard space.
+        data_sig = (
+            str(dash.get("x_axis")).lower().strip() if dash.get("x_axis") else None,
+            str(dash.get("y_axis")).lower().strip() if dash.get("y_axis") else None
         )
-        if sig in seen_signatures:
+        if data_sig in seen_signatures:
             candidate_x = [best.get("cat_col2"), best.get("time_col"), best.get("cat_col")]
             candidate_y = [best.get("secondary_metric"), best.get("primary_metric")]
-            candidate_agg = ["AVG", "SUM", "COUNT"]
+            
+            # CRITICAL LOOPHOLE FIX: Force candidate_agg to be single value to prevent identical phantom charts.
+            # In pre-aggregated SQL data, SUM, AVG and COUNT evaluate to visually identical plots.
+            candidate_agg = [str(dash.get("aggregation", "SUM")).upper()]
             changed = False
             for cx in candidate_x:
                 if not cx or cx not in actual_columns:
@@ -245,31 +248,32 @@ def _finalize_dashboard_plan(
                             continue
                     else:
                         cy = cx
-                    for ca in candidate_agg:
-                        new_sig = (dash.get("chart_type"), cx, cy, ca)
-                        if new_sig in seen_signatures:
-                            continue
-                        # For line/area, prefer time-like x-axis when available
-                        if dash.get("chart_type") in {"line", "area"} and roles["date"] and cx not in roles["date"]:
-                            continue
-                        dash["x_axis"] = cx
-                        dash["y_axis"] = cy
-                        dash["aggregation"] = ca
-                        seen_signatures.add(new_sig)
-                        issues.append(
-                            f"{key}: adjusted axes/aggregation to avoid duplicate panel ({dash['chart_type']} {cx}/{cy} {ca})."
-                        )
-                        changed = True
-                        break
-                    if changed:
-                        break
+                    # Discard candidate_agg loop since we ignore aggregation for uniqueness
+                    new_sig = (str(cx).lower().strip() if cx else None, str(cy).lower().strip() if cy else None)
+                    if new_sig in seen_signatures:
+                        continue
+                    
+                    # For line/area, prefer time-like x-axis when available
+                    if dash.get("chart_type") in {"line", "area"} and roles["date"] and cx not in roles["date"]:
+                        continue
+                    dash["x_axis"] = cx
+                    dash["y_axis"] = cy
+                    dash["aggregation"] = candidate_agg[0]
+                    seen_signatures.add(new_sig)
+                    issues.append(
+                        f"{key}: adjusted axes to avoid duplicate panel ({dash['chart_type']} {cx}/{cy})."
+                    )
+                    changed = True
+                    break
                 if changed:
                     break
             if not changed:
-                # Keep current if no better alternative found.
-                seen_signatures.add(sig)
+                # CRITICAL FIX: If no unique data perspectives remain, completely delete this redundant chart.
+                issues.append(f"{key}: deleted entirely to prevent identical duplicate data visual.")
+                del dplan[key]
+                continue
         else:
-            seen_signatures.add(sig)
+            seen_signatures.add(data_sig)
 
         dplan[key] = dash
 

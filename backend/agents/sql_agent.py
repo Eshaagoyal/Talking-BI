@@ -420,7 +420,7 @@ Instructions:
 - If the user implies time trends, use date_trunc on the documented date expression for TEXT dates.
 - Prefer a single FOCUS table; join only if the question clearly needs two relations present in schema.
 
-OUTPUT: Return ONLY the raw SQL. No markdown, no backticks, no explanation, no trailing semicolon. Must include LIMIT 200.
+OUTPUT: Return ONLY the raw SQL. No markdown, no backticks, no explanation, no trailing semicolon. Always include a LIMIT. If the user specifies a number (e.g. 'top 5'), use that exact LIMIT. Otherwise, default to LIMIT 200.
 
 SQL:"""
 
