@@ -6,18 +6,18 @@ import {
 } from "recharts"
 
 const COLOR_PALETTES = {
-  indigo:  ["#4f46e5","#6366f1","#818cf8","#a5b4fc","#3730a3","#312e81","#c7d2fe"],
-  violet:  ["#7c3aed","#8b5cf6","#a78bfa","#c4b5fd","#6d28d9","#5b21b6","#ddd6fe"],
-  emerald: ["#059669","#10b981","#34d399","#6ee7b7","#047857","#065f46","#a7f3d0"],
-  amber:   ["#d97706","#f59e0b","#fbbf24","#fcd34d","#b45309","#92400e","#fde68a"],
-  rose:    ["#e11d48","#f43f5e","#fb7185","#fda4af","#be123c","#9f1239","#fecdd3"],
-  sky:     ["#0284c7","#0ea5e9","#38bdf8","#7dd3fc","#0369a1","#075985","#bae6fd"],
+  indigo: ["#4f46e5", "#6366f1", "#818cf8", "#a5b4fc", "#3730a3", "#312e81", "#c7d2fe"],
+  violet: ["#7c3aed", "#8b5cf6", "#a78bfa", "#c4b5fd", "#6d28d9", "#5b21b6", "#ddd6fe"],
+  emerald: ["#059669", "#10b981", "#34d399", "#6ee7b7", "#047857", "#065f46", "#a7f3d0"],
+  amber: ["#d97706", "#f59e0b", "#fbbf24", "#fcd34d", "#b45309", "#92400e", "#fde68a"],
+  rose: ["#e11d48", "#f43f5e", "#fb7185", "#fda4af", "#be123c", "#9f1239", "#fecdd3"],
+  sky: ["#0284c7", "#0ea5e9", "#38bdf8", "#7dd3fc", "#0369a1", "#075985", "#bae6fd"],
 }
 
 const fmt = (val) => {
   if (typeof val !== "number") return val
-  if (val >= 1000000) return `$${(val/1000000).toFixed(2)}M`
-  if (val >= 1000) return `$${(val/1000).toFixed(1)}K`
+  if (val >= 1000000) return `$${(val / 1000000).toFixed(2)}M`
+  if (val >= 1000) return `$${(val / 1000).toFixed(1)}K`
   return `$${val.toFixed(2)}`
 }
 
@@ -96,7 +96,7 @@ function Chart({ dashboard, colors, height = 280 }) {
           outerRadius={height > 180 ? 90 : 50}
           innerRadius={height > 180 ? 35 : 15}
           paddingAngle={2}
-          label={height > 180 ? ({ name, percent }) => `${name} ${(percent*100).toFixed(0)}%` : false}
+          label={height > 180 ? ({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%` : false}
           labelLine={height > 180}
           isAnimationActive={false}
         >
@@ -177,7 +177,7 @@ export default function DashboardView({ result }) {
     setIsExplaining(true)
     setExplanation("")
     try {
-      const res = await fetch("http://127.0.0.1:8000/explain-chart", {
+      const res = await fetch("http://16.171.238.112:8000/explain-chart", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -302,11 +302,11 @@ export default function DashboardView({ result }) {
                   borderRadius: 20, padding: "3px 10px", fontSize: 11,
                   color: "var(--text-secondary)"
                 }}>{active.total_points} points</span>
-                <button 
+                <button
                   onClick={() => handleExplain(active)}
                   disabled={isExplaining}
                   style={{
-                    background: `linear-gradient(to right, ${primaryColor}15, ${primaryColor}25)`, 
+                    background: `linear-gradient(to right, ${primaryColor}15, ${primaryColor}25)`,
                     border: `1px solid ${primaryColor}40`,
                     borderRadius: 20, padding: "3px 12px", fontSize: 11,
                     color: primaryColor, fontWeight: 700, cursor: isExplaining ? "wait" : "pointer",

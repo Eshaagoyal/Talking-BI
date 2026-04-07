@@ -174,7 +174,7 @@ def health():
 
         db = test_connection()
 
-        gemini_ok = bool(os.getenv("GEMINI_API_KEY"))
+        groq_ok = bool(os.getenv("GROQ_API_KEY"))
 
         return {
 
@@ -182,7 +182,7 @@ def health():
 
             "database": db,
 
-            "gemini_key_set": gemini_ok,
+            "groq_key_set": groq_ok,
 
             "overall": "ALL OK — ready to generate dashboards"
 
@@ -598,9 +598,12 @@ def _extract_gemini_text(response) -> str:
 def chat_endpoint(req: ChatRequest):
     """Chatbot — Q&A on the current dashboard or general BI questions."""
     try:
-        import google.generativeai as genai
+        from openai import OpenAI
 
-        chat_model = genai.GenerativeModel("gemini-2.5-flash")
+        client = OpenAI(
+            api_key=os.getenv("GROQ_API_KEY"),
+            base_url="https://api.groq.com/openai/v1",
+        )
 
         context = req.dashboard_context
         style = (req.answer_style or "balanced").lower().strip()
@@ -648,12 +651,15 @@ User question: "{req.message}"
 Instructions: {length_guide}
 Always produce a helpful answer. Plain text only, no markdown."""
 
-        response = chat_model.generate_content(prompt)
-        text = _extract_gemini_text(response)
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        text = response.choices[0].message.content.strip()
         if not text:
             raise HTTPException(
                 status_code=502,
-                detail="The model returned an empty reply. Check GEMINI_API_KEY and try again.",
+                detail="The model returned an empty reply. Check GROQ_API_KEY and try again.",
             )
         return {"response": text}
 
@@ -667,8 +673,11 @@ Always produce a helpful answer. Plain text only, no markdown."""
 def explain_chart_endpoint(req: ExplainChartRequest):
     """Generates a non-technical 2-3 sentence explanation of a single chart."""
     try:
-        import google.generativeai as genai
-        chat_model = genai.GenerativeModel("gemini-2.5-flash")
+        from openai import OpenAI
+        client = OpenAI(
+            api_key=os.getenv("GROQ_API_KEY"),
+            base_url="https://api.groq.com/openai/v1",
+        )
         
         prompt = f"""You are a helpful BI assistant speaking to a non-technical user.
 Please explain the following chart in 2 to 3 very simple, clear sentences. 
@@ -679,8 +688,11 @@ Chart Description: {req.description}
 Raw Data:
 {json.dumps(req.data, default=str)[:3000]}
 """
-        response = chat_model.generate_content(prompt)
-        text = _extract_gemini_text(response)
+        response = client.chat.completions.create(
+            model="grok-beta",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        text = response.choices[0].message.content.strip()
         if not text:
             text = "Sorry, I couldn't generate an explanation for this chart right now."
         return {"explanation": text}

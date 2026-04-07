@@ -12,7 +12,7 @@ Natural-language dashboards on your own Postgres (e.g. Supabase): pick a **datas
 - Python 3.11+
 - Node 18+
 - A Postgres URL (Supabase project database)
-- A [Google AI API key](https://ai.google.dev/) for Gemini
+- A [Groq API key](https://console.groq.com/) for Llama 3
 
 ## Backend setup
 
@@ -24,7 +24,7 @@ python -m venv .venv
 python -m pip install -r requirements.txt
 ```
 
-Copy `backend/.env.example` to `backend/.env` and set `SUPABASE_DB_URL` and `GEMINI_API_KEY`.
+Copy `backend/.env.example` to `backend/.env` and set `SUPABASE_DB_URL` and `GROQ_API_KEY`.
 
 Run the API:
 
@@ -32,14 +32,14 @@ Run the API:
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Health check: `GET http://127.0.0.1:8000/health`
+Health check: `GET http://16.171.238.112:8000/health`
 
 ### Environment variables
 
 | Variable | Description |
 |----------|-------------|
 | `SUPABASE_DB_URL` | Postgres connection string |
-| `GEMINI_API_KEY` | Gemini API key |
+| `GROQ_API_KEY` | Groq API key |
 | `CORS_ORIGINS` | `*` (dev) or comma-separated frontend URLs (production) |
 
 ## Frontend setup

@@ -2,19 +2,24 @@ import json
 import os
 import re
 import time
-import google.generativeai as genai
+from openai import OpenAI
 from dotenv import load_dotenv
 
 load_dotenv()
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-model = genai.GenerativeModel("gemini-2.5-flash")
+client = OpenAI(
+    api_key=os.getenv("GROQ_API_KEY"),
+    base_url="https://api.groq.com/openai/v1",
+)
 
 
 def call_gemini(prompt: str) -> str:
     for attempt in range(3):
         try:
-            response = model.generate_content(prompt)
-            return response.text.strip()
+            response = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "user", "content": prompt}]
+            )
+            return response.choices[0].message.content.strip()
         except Exception as e:
             if "429" in str(e) and attempt < 2:
                 time.sleep(20)
@@ -223,59 +228,30 @@ def _finalize_dashboard_plan(
         if sig in seen_signatures:
             candidate_x = [best.get("cat_col2"), best.get("time_col"), best.get("cat_col")]
             candidate_y = [best.get("secondary_metric"), best.get("primary_metric")]
-            
-            if prefs:
-                candidate_chart = [dash["chart_type"]]
-            else:
-                candidate_chart = ["bar", "pie", "line", "area"]
-                
+            candidate_agg = ["AVG", "SUM", "COUNT"]
             changed = False
-            for cy in candidate_y:
-                if roles["numeric"]:
-                    if not cy or cy not in roles["numeric"]:
-                        continue
-                
-                for cx in candidate_x:
-                    if not cx or cx not in actual_columns:
-                        continue
-                        
-                    if not roles["numeric"]:
+            for cx in candidate_x:
+                if not cx or cx not in actual_columns:
+                    continue
+                for cy in candidate_y:
+                    if roles["numeric"]:
+                        if not cy or cy not in roles["numeric"]:
+                            continue
+                    else:
                         cy = cx
-                        
-                    for c_type in candidate_chart:
-                        new_sig = (c_type, cx, cy, "SUM")
+                    for ca in candidate_agg:
+                        new_sig = (dash.get("chart_type"), cx, cy, ca)
                         if new_sig in seen_signatures:
                             continue
-                            
                         # For line/area, prefer time-like x-axis when available
-                        if c_type in {"line", "area"} and roles["date"] and cx not in roles["date"]:
+                        if dash.get("chart_type") in {"line", "area"} and roles["date"] and cx not in roles["date"]:
                             continue
-                        
-                        old_y = dash.get("y_axis", "")
-                        old_x = dash.get("x_axis", "")
-                        
-                        dash["chart_type"] = c_type
                         dash["x_axis"] = cx
                         dash["y_axis"] = cy
-                        dash["aggregation"] = "SUM"
-                        
-                        # Update title dynamically to avoid misleading labels
-                        if cy != old_y or cx != old_x:
-                            title = dash.get("title", "")
-                            desc = dash.get("description", "")
-                            if old_y and old_y in title:
-                                title = title.replace(old_y, cy)
-                                desc = desc.replace(old_y, cy)
-                            if old_x and old_x in title:
-                                title = title.replace(old_x, cx)
-                            if cy and cy not in title:
-                                title = f"{cy} by {cx}"
-                            dash["title"] = title
-                            dash["description"] = desc
-                                
+                        dash["aggregation"] = ca
                         seen_signatures.add(new_sig)
                         issues.append(
-                            f"{key}: adjusted type/axes to avoid duplicate panel ({c_type} {cx}/{cy} SUM)."
+                            f"{key}: adjusted axes/aggregation to avoid duplicate panel ({dash['chart_type']} {cx}/{cy} {ca})."
                         )
                         changed = True
                         break
@@ -283,7 +259,6 @@ def _finalize_dashboard_plan(
                         break
                 if changed:
                     break
-                    
             if not changed:
                 # Keep current if no better alternative found.
                 seen_signatures.add(sig)
