@@ -16,8 +16,14 @@ def call_gemini(prompt: str) -> str:
     for attempt in range(3):
         try:
             response = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[{"role": "user", "content": prompt}]
+                model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+                messages=[
+                    {"role": "system", "content": "You are a JSON-only object API. You output raw JSON objects and nothing else."},
+                    {"role": "user", "content": prompt}
+                ],
+                response_format={"type": "json_object"},
+                max_tokens=2048,
+                temperature=0.1
             )
             return response.choices[0].message.content.strip()
         except Exception as e:
@@ -309,8 +315,7 @@ def clean_and_structure(
         else "USER CHART PREFERENCE: none — choose the best mix of bar, line, pie, and area for the data."
     )
 
-    # Clamp num_dashboards
-    num_dashboards = max(2, min(4, num_dashboards))
+    is_auto = (num_dashboards == 0)
 
     # Build dashboard templates based on count
     dashboard_templates = {
@@ -340,11 +345,21 @@ def clean_and_structure(
         }
     }
 
-    # Only include requested number of dashboards
-    active_templates = {
-        k: v for k, v in dashboard_templates.items()
-        if int(k.split("_")[1]) <= num_dashboards
-    }
+    if is_auto:
+        active_templates = dashboard_templates
+        auto_rule = "AUTO-LAYOUT MODE: You must autonomously decide the number of charts to generate (up to 4). CRITICAL RULE: DO NOT create redundant charts. You must generate exactly ONE chart per unique combination of (Metric + Category). If the SQL only returned 1 category column and 2 metric columns, you MUST return exactly 2 charts. Generating 3 or 4 charts in that scenario is illegal and redundant."
+        output_keys_example = '"dashboard_1": {...},\n    "dashboard_N": {...} // Generate 1 to 4 dashboard keys depending on the unique combinations.'
+    else:
+        num_dashboards = max(2, min(4, num_dashboards))
+        active_templates = {
+            k: v for k, v in dashboard_templates.items()
+            if int(k.split("_")[1]) <= num_dashboards
+        }
+        auto_rule = f"STRICT COUNT MODE: You MUST generate exactly {num_dashboards} dashboards to fulfill the layout requirement."
+        output_keys_example = chr(10).join([
+            f'"dashboard_{i+1}": {{"title": "...", "description": "...", "chart_type": "...", "x_axis": "...", "y_axis": "...", "aggregation": "..."}}' + ("," if i < num_dashboards - 1 else "")
+            for i in range(num_dashboards)
+        ])
 
     prompt = f"""You are DeepPrep — a BI dashboard planning agent (arXiv 2602.07371).
 You are execution-grounded: the SQL already ran; you only assign axes from columns that EXIST in the result rows.
@@ -371,19 +386,20 @@ SUGGESTED COLUMNS (from analysis):
 - Region/second category: {best["cat_col2"]}
 - Time column: {best["time_col"]}
 
-DASHBOARD ROLES TO FILL:
+DASHBOARD ROLES TO FILL (Use these as inspiration):
 {json.dumps(active_templates, indent=2)}
 
 STRICT RULES:
-1. x_axis MUST be an exact column name from the actual columns list
-2. y_axis MUST be an exact column name from the numeric columns list
-3. chart_type must be: bar / line / pie / area
-4. Use "pie" only for proportional breakdowns (max 8 categories)
-5. Use "line" or "area" for time-based trends
-6. Use "bar" for comparisons
-7. aggregation must be: SUM / AVG / COUNT
-8. Titles must be descriptive and specific to the data
-9. No markdown in any text field
+1. {auto_rule}
+2. x_axis MUST be an exact column name from the actual columns list
+3. y_axis MUST be an exact column name from the numeric columns list
+4. chart_type must be: bar / line / pie / area
+5. Use "pie" only for proportional breakdowns (max 8 categories)
+6. Use "line" or "area" for time-based trends
+7. Use "bar" for comparisons
+8. aggregation must be: SUM / AVG / COUNT
+9. Titles must be descriptive and specific to the data
+10. No markdown in any text field
 
 Return ONLY valid JSON — no markdown, no backticks, no explanation:
 {{
@@ -396,10 +412,7 @@ Return ONLY valid JSON — no markdown, no backticks, no explanation:
     "issues_found": []
   }},
   "dashboard_plan": {{
-    {chr(10).join([
-        f'"dashboard_{i+1}": {{"title": "...", "description": "...", "chart_type": "...", "x_axis": "...", "y_axis": "...", "aggregation": "..."}}'
-        for i in range(num_dashboards)
-    ])}
+    {output_keys_example}
   }}
 }}"""
 

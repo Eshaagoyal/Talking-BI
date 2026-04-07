@@ -45,12 +45,18 @@ def build_chart_data(raw_data: list, dashboard_plan: dict) -> dict:
                 if counts[k] > 0
             }
         elif aggregation == "COUNT":
-            result = {k: counts[k] for k in counts}
+            # Edge Case Fix: If the SQL query itself executed a COUNT() and grouped it, 
+            # Python's counts[k] will incorrectly be 1 (because SQL returned 1 row per group).
+            # We should respect the SQL's computed numeric output if it's statistically significant.
+            if sum(aggregated.values()) > sum(counts.values()):
+                result = {k: round(v, 2) for k, v in aggregated.items()}
+            else:
+                result = {k: counts[k] for k in counts}
         else:  # SUM (default)
             result = {k: round(v, 2) for k, v in aggregated.items()}
 
-        # Remove zero/unknown noise
-        result = {k: v for k, v in result.items() if v != 0 and k != "Unknown"}
+        # Remove "Unknown" noise but DO NOT remove 0 values (valid data metrics)
+        result = {k: v for k, v in result.items() if k != "Unknown"}
 
         # Sort and limit
         if chart_type in ("line", "area"):

@@ -10,28 +10,7 @@ function sanitizeTableName(filename) {
   return s.slice(0, 63)
 }
 
-const CHART_PRESET_GROUPS = ["Recommended", "Single chart", "Combinations"]
 
-const CHART_PRESETS = [
-  { value: "auto", label: "Automatic (recommended)", types: [], group: "Recommended" },
-  { value: "bar", label: "Bar — comparisons", types: ["bar"], group: "Single chart" },
-  { value: "line", label: "Line — trends", types: ["line"], group: "Single chart" },
-  { value: "area", label: "Area — filled trends", types: ["area"], group: "Single chart" },
-  { value: "pie", label: "Pie — proportions", types: ["pie"], group: "Single chart" },
-  { value: "bar_line", label: "Bar & line mix", types: ["bar", "line"], group: "Combinations" },
-  { value: "mixed", label: "All types (rotate)", types: ["bar", "line", "area", "pie"], group: "Combinations" },
-]
-
-function presetFromTypes(types) {
-  if (!Array.isArray(types) || types.length === 0) return "auto"
-  const norm = [...new Set(types.map((t) => String(t).toLowerCase()))].sort().join(",")
-  const hit = CHART_PRESETS.find((p) => [...p.types].sort().join(",") === norm)
-  return hit ? hit.value : "auto"
-}
-
-function typesForPreset(value) {
-  return CHART_PRESETS.find((p) => p.value === value)?.types ?? []
-}
 
 const selectStyle = {
   width: "100%",
@@ -58,15 +37,10 @@ export default function NewDashboardForm({
   onCancel,
   initialQuery = "",
   initialTheme = "cyan",
-  initialNumViz = 4,
-  initialKpis,
-  initialChartTypes,
   initialDatasetKey,
 }) {
   const [query, setQuery] = useState(initialQuery)
-  const [kpis, setKpis] = useState(() => (Array.isArray(initialKpis) ? initialKpis : []))
-  const [kpiInput, setKpiInput] = useState("")
-  const [numViz, setNumViz] = useState(() => Math.min(4, Math.max(2, initialNumViz ?? 4)))
+  const [kpis, setKpis] = useState([])
   const [theme, setTheme] = useState(() =>
     THEME_OPTIONS.some((t) => t.key === initialTheme) ? initialTheme : "cyan"
   )
@@ -78,9 +52,8 @@ export default function NewDashboardForm({
   const [uploadName, setUploadName] = useState(null)
   const [uploadTableName, setUploadTableName] = useState("")
   const [uploadErr, setUploadErr] = useState(null)
-  const [chartPreset, setChartPreset] = useState(() => presetFromTypes(initialChartTypes))
   const fileRef = useRef(null)
-  const kpiRef = useRef(null)
+
 
   const loadDatasets = useCallback(async () => {
     setDatasetsLoading(true)
@@ -120,28 +93,12 @@ export default function NewDashboardForm({
   useEffect(() => {
     setQuery(initialQuery)
     setTheme(THEME_OPTIONS.some((t) => t.key === initialTheme) ? initialTheme : "cyan")
-    setNumViz(Math.min(8, Math.max(2, initialNumViz ?? 4)))
-    setKpis(Array.isArray(initialKpis) ? initialKpis : [])
-    setChartPreset(presetFromTypes(initialChartTypes))
     if (initialDatasetKey) setDatasetKey(initialDatasetKey)
-  }, [initialQuery, initialTheme, initialNumViz, initialKpis, initialChartTypes, initialDatasetKey])
+  }, [initialQuery, initialTheme, initialDatasetKey])
 
   const accent = themeAccent(theme)
 
-  const addKpi = (val) => {
-    const t = val.trim()
-    if (t && !kpis.includes(t)) setKpis((k) => [...k, t])
-    setKpiInput("")
-  }
 
-  const handleKpiKeyDown = (e) => {
-    if (e.key === "Enter" || e.key === ",") {
-      e.preventDefault()
-      addKpi(kpiInput)
-    } else if (e.key === "Backspace" && kpiInput === "" && kpis.length > 0) {
-      setKpis((k) => k.slice(0, -1))
-    }
-  }
 
   const onFile = (e) => {
     const f = e.target.files?.[0]
@@ -160,11 +117,7 @@ export default function NewDashboardForm({
   const handleSubmit = async () => {
     if (!query.trim()) return
     setUploadErr(null)
-    if (!kpis.length) {
-      setUploadErr("Add at least one key metric (e.g. revenue, units sold).")
-      return
-    }
-    const sent = Math.min(4, Math.max(2, numViz))
+
     let targetDataset = datasetKey
 
     if (pendingFile) {
@@ -201,17 +154,15 @@ export default function NewDashboardForm({
 
     onGenerate({
       query: query.trim(),
-      kpis,
-      num_visualizations: sent,
+      kpis: [],
+      num_visualizations: 0,
       color_schema: theme,
-      preferred_chart_types: typesForPreset(chartPreset),
+      preferred_chart_types: [],
       dataset_key: targetDataset,
     })
   }
 
-  const bumpViz = (delta) => {
-    setNumViz((n) => Math.min(4, Math.max(2, n + delta)))
-  }
+
 
   const appendVoice = (text) => {
     setQuery((q) => (q ? `${q.trim()} ${text}` : text))
@@ -495,138 +446,9 @@ export default function NewDashboardForm({
             />
           </section>
 
-          <section>
-            <label style={{ ...labelStyle, marginBottom: 4 }}>Key metrics</label>
-            <p style={{ margin: "0 0 10px", fontSize: 12, color: "var(--text-3)" }}>Required — at least one metric the charts should reflect.</p>
-            <div
-              onClick={() => kpiRef.current?.focus()}
-              style={{
-                background: "#ffffff",
-                border: "1px solid var(--border)",
-                borderRadius: 12,
-                padding: "8px 12px",
-                minHeight: 46,
-                display: "flex",
-                flexWrap: "wrap",
-                gap: 6,
-                alignItems: "center",
-                cursor: "text",
-              }}
-            >
-              {kpis.map((k) => (
-                <span
-                  key={k}
-                  style={{
-                    background: `${accent}12`,
-                    color: accent,
-                    border: `1px solid ${accent}30`,
-                    borderRadius: 999,
-                    padding: "3px 10px",
-                    fontSize: 12,
-                    fontWeight: 600,
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 6,
-                  }}
-                >
-                  {k}
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      setKpis((kp) => kp.filter((x) => x !== k))
-                    }}
-                    style={{
-                      background: "none",
-                      border: "none",
-                      cursor: "pointer",
-                      color: accent,
-                      padding: 0,
-                      fontSize: 14,
-                      lineHeight: 1,
-                    }}
-                  >
-                    ×
-                  </button>
-                </span>
-              ))}
-              <input
-                ref={kpiRef}
-                value={kpiInput}
-                onChange={(e) => setKpiInput(e.target.value)}
-                onKeyDown={handleKpiKeyDown}
-                onBlur={() => kpiInput && addKpi(kpiInput)}
-                placeholder={kpis.length === 0 ? "Add metrics (e.g. revenue, margin). Press Enter after each." : ""}
-                style={{
-                  flex: 1,
-                  minWidth: 140,
-                  border: "none",
-                  outline: "none",
-                  fontSize: 13,
-                  background: "transparent",
-                }}
-              />
-            </div>
-          </section>
+
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 20 }}>
-            <section>
-              <label style={labelStyle}>Visualizations (total)</label>
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 4,
-                  background: "#ffffff",
-                  border: "1px solid var(--border)",
-                  borderRadius: 12,
-                  padding: 4,
-                  maxWidth: 200,
-                }}
-              >
-                <button type="button" onClick={() => bumpViz(-1)} disabled={numViz <= 2} style={stepBtn(numViz <= 2)}>
-                  −
-                </button>
-                <input
-                  type="number"
-                  min={2}
-                  max={4}
-                  value={numViz}
-                  onChange={(e) => {
-                    const n = parseInt(e.target.value, 10)
-                    if (!Number.isNaN(n)) setNumViz(Math.min(4, Math.max(2, n)))
-                  }}
-                  style={{
-                    flex: 1,
-                    border: "none",
-                    background: "transparent",
-                    textAlign: "center",
-                    fontSize: 17,
-                    fontWeight: 700,
-                    color: "var(--text-1)",
-                    fontFamily: "inherit",
-                    outline: "none",
-                  }}
-                />
-                <button type="button" onClick={() => bumpViz(1)} disabled={numViz >= 4} style={stepBtn(numViz >= 4)}>
-                  +
-                </button>
-              </div>
-            </section>
-            <section>
-              <label style={labelStyle}>Chart preference</label>
-              <select value={chartPreset} onChange={(e) => setChartPreset(e.target.value)} style={selectStyle}>
-                {CHART_PRESET_GROUPS.map((g) => (
-                  <optgroup key={g} label={g}>
-                    {CHART_PRESETS.filter((p) => p.group === g).map((p) => (
-                      <option key={p.value} value={p.value}>
-                        {p.label}
-                      </option>
-                    ))}
-                  </optgroup>
-                ))}
-              </select>
-            </section>
             <section>
               <label style={labelStyle}>Full-page color theme</label>
               <select value={theme} onChange={(e) => setTheme(e.target.value)} style={selectStyle}>
@@ -689,25 +511,25 @@ export default function NewDashboardForm({
             <button
               type="button"
               onClick={handleSubmit}
-              disabled={loading || !query.trim() || kpis.length === 0}
+              disabled={loading || !query.trim()}
               style={{
                 flex: "1 1 220px",
-                background: loading || !query.trim() || kpis.length === 0 ? "var(--surface)" : `linear-gradient(180deg, ${accent}, ${accent}dd)`,
+                background: loading || !query.trim() ? "var(--surface)" : `linear-gradient(180deg, ${accent}, ${accent}dd)`,
                 border: "none",
                 borderRadius: 12,
                 padding: "14px 26px",
                 fontSize: 15,
                 fontWeight: 700,
-                color: loading || !query.trim() || kpis.length === 0 ? "var(--text-3)" : "#fff",
-                cursor: loading || !query.trim() || kpis.length === 0 ? "not-allowed" : "pointer",
+                color: loading || !query.trim() ? "var(--text-3)" : "#fff",
+                cursor: loading || !query.trim() ? "not-allowed" : "pointer",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
                 gap: 10,
-                boxShadow: loading || !query.trim() || kpis.length === 0 ? "none" : `0 10px 28px ${accent}45`,
+                boxShadow: loading || !query.trim() ? "none" : `0 10px 28px ${accent}45`,
               }}
             >
-              {loading ? "Generating…" : `Generate dashboard · ${Math.min(4, numViz)} views`}
+              {loading ? "Generating…" : `Generate dashboard`}
             </button>
           </div>
 
@@ -743,21 +565,7 @@ export default function NewDashboardForm({
   )
 }
 
-function stepBtn(disabled) {
-  return {
-    width: 40,
-    height: 40,
-    borderRadius: 10,
-    border: "none",
-    background: disabled ? "transparent" : "#fff",
-    color: disabled ? "var(--text-3)" : "var(--text-1)",
-    fontSize: 20,
-    fontWeight: 600,
-    cursor: disabled ? "not-allowed" : "pointer",
-    lineHeight: 1,
-    boxShadow: disabled ? "none" : "var(--shadow)",
-  }
-}
+
 
 const labelStyle = {
   fontSize: 12,

@@ -22,7 +22,7 @@ def call_gemini(prompt: str) -> str:
     for attempt in range(3):
         try:
             response = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
                 messages=[{"role": "user", "content": prompt}]
             )
             return response.choices[0].message.content.strip()

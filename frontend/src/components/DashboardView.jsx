@@ -4,6 +4,7 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid,
   Tooltip, Legend, ResponsiveContainer
 } from "recharts"
+import { apiUrl } from "../api"
 
 const COLOR_PALETTES = {
   indigo: ["#4f46e5", "#6366f1", "#818cf8", "#a5b4fc", "#3730a3", "#312e81", "#c7d2fe"],
@@ -177,7 +178,7 @@ export default function DashboardView({ result }) {
     setIsExplaining(true)
     setExplanation("")
     try {
-      const res = await fetch("http://16.171.238.112:8000/explain-chart", {
+      const res = await fetch(apiUrl("/explain-chart"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

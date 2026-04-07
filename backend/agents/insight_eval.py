@@ -16,8 +16,14 @@ def call_gemini(prompt: str) -> str:
     for attempt in range(3):
         try:
             response = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[{"role": "user", "content": prompt}]
+                model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+                messages=[
+                    {"role": "system", "content": "You are a JSON-only API. You output raw JSON objects and nothing else."},
+                    {"role": "user", "content": prompt}
+                ],
+                response_format={"type": "json_object"},
+                max_tokens=2048,
+                temperature=0.2
             )
             return response.choices[0].message.content.strip()
         except Exception as e:
@@ -86,9 +92,9 @@ def evaluate_insights(
 
     kpi_text = ", ".join(kpis)
 
-    prompt = f"""You are InsightEval — a senior BI analyst (arXiv 2511.22884).
-You must ground every claim in the structured numbers below (top_results, top_value, bottom_value).
-Do not invent metrics or categories not present in DASHBOARD RESULTS.
+    prompt = f"""You are InsightEval — an elite Executive BI & Strategy Analyst.
+You must ground every claim strictly in the structured numbers below (top_results, top_value, bottom_value).
+DO NOT HALLUCINATE metrics, columns, or categories not present in the DASHBOARD RESULTS.
 
 USER ASKED: "{user_query}"
 REQUESTED KPIs: {kpi_text}
@@ -99,19 +105,23 @@ DASHBOARD RESULTS:
 YOUR TASKS:
 
 1. INSIGHT SUMMARY (3-5 sentences):
-   - Every sentence must cite concrete values from top_results or top_value/bottom_value (names and amounts).
-   - Plain text only — no markdown.
+   - Write a professional, highly analytical business summary.
+   - Do NOT just list numbers. Tell the story of what the data fundamentally reveals about the business (e.g. concentrations of revenue, disparities, or high-leverage areas).
+   - Every sentence must be tied to a concrete value from the data.
+   - Plain text only.
 
-2. KPI COVERAGE SCORE:
+2. KPI COVERAGE SCORE (0-100):
    - A KPI is "covered" if it appears in a y_axis name or clearly in the measured values shown.
-   - Integer 0-100.
 
-3. RECOMMENDATIONS (3):
-   - Each references a specific number from the data above.
+3. RECOMMENDATIONS (3 highly actionable points):
+   - Be extremely strategic. Use the exact numbers (e.g. "Given the $2.8M concentrated in the Central region, immediately reallocate marketing spend...").
+   - Do not give generic advice ("Look into sales"). Give precise directives based on the statistical leaders or laggards.
+   - Plain text only.
 
-4. TOP INSIGHT: one sentence with one specific number from the data.
+4. TOP INSIGHT:
+   - Provide exactly one punchy, impactful, tweet-length sentence highlighting the most critical financial or operational discovery from the data.
 
-CRITICAL: Plain text only. No markdown.
+CRITICAL: Plain text only. No markdown formatting anywhere.
 
 Return ONLY this exact JSON structure:
 {{

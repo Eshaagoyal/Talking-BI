@@ -124,11 +124,8 @@ class DashboardRequest(BaseModel):
     query: str
 
     kpis: List[str] = []
-
-    num_visualizations: Optional[int] = 4
-
+    num_visualizations: Optional[int] = 0
     color_schema: Optional[str] = "blue"
-
     preferred_chart_types: List[str] = []
 
     # Exact Postgres table name from GET /datasets, or "primary" for default pick
@@ -449,16 +446,17 @@ def generate_dashboards(req: DashboardRequest):
         kpis = [str(k).strip().lower() for k in (req.kpis or []) if str(k).strip()]
 
         if not kpis:
+            try:
+                from agents.sql_agent import _explore_database, resolve_focus_tables
+                from agents.kpi_agent import detect_kpis
+                exploration = _explore_database()
+                focus_tables, _ = resolve_focus_tables(exploration, req.dataset_key or "primary")
+                if focus_tables and focus_tables[0] in exploration:
+                    kpis = detect_kpis(req.query.strip(), exploration[focus_tables[0]])
+            except Exception as e:
+                print(f"Auto KPI detection error: {e}")
 
-            raise HTTPException(
-
-                status_code=400,
-
-                detail="Provide at least one KPI (e.g. sales, profit, quantity). Auto-detect is disabled.",
-
-            )
-
-        num_viz = max(2, min(4, req.num_visualizations or 4))
+        num_viz = req.num_visualizations or 0
 
 
 
@@ -652,7 +650,7 @@ Instructions: {length_guide}
 Always produce a helpful answer. Plain text only, no markdown."""
 
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
             messages=[{"role": "user", "content": prompt}]
         )
         text = response.choices[0].message.content.strip()

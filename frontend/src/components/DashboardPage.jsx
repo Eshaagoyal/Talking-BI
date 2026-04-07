@@ -3,6 +3,7 @@ import { THEME_OPTIONS, themeLabel } from "../themeOptions"
 import { ChartBlock, fmt } from "./ChartBlock"
 import VoiceMicButton from "./VoiceMicButton"
 import { downloadDashboardPdf } from "../utils/printDashboard"
+import { apiUrl } from "../api"
 
 const PALETTES = {
   cyan:    ["#0d9488","#14b8a6","#2dd4bf","#5eead4","#0f766e","#134e4a","#99f6e4"],
@@ -79,7 +80,7 @@ function DashboardCard({ dashboard, index, colors, themeColor, emphasized }) {
     setIsExplaining(true)
     setExplanation("")
     try {
-      const res = await fetch("http://16.171.238.112:8000/explain-chart", {
+      const res = await fetch(apiUrl("/explain-chart"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -345,10 +346,11 @@ export default function DashboardPage({ dashboard, onEdit, onRegenerate }) {
           <p className="print-only" style={{ fontSize:12, color:"#64748b", margin:"0 0 8px", fontWeight:600 }}>
             KPI coverage {coverage}% · {themeLabel(color_schema)} · {row_count?.toLocaleString()} rows
           </p>
-          <p className="no-print" style={{ fontSize:14, color:"var(--text-2)", lineHeight:1.75, maxWidth:820, margin:0 }}>
-            {clean(insights?.insight_summary?.substring(0, 220))}
-            {insights?.insight_summary && insights.insight_summary.length > 220 ? "…" : ""}
-          </p>
+          {insights?.top_insight && (
+            <p className="no-print" style={{ fontSize:15, fontWeight:500, color:"var(--text-2)", lineHeight:1.6, maxWidth:820, margin:0, fontStyle: "italic" }}>
+              ✨ {clean(insights.top_insight)}
+            </p>
+          )}
           <div style={{ fontSize:12, color:"var(--text-3)", marginTop:10 }}>
             Plan: AI planner · Theme: {themeLabel(color_schema)} · {row_count?.toLocaleString()} rows analysed
           </div>
